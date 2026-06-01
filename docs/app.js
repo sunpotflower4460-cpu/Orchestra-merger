@@ -3,6 +3,10 @@
   const REPO = 'Orchestra-merger';
   const API_BASE = 'https://api.github.com';
   const PAT_STORAGE_KEY = 'orchestra_merger_pat';
+  // NOTE: GitHub 側の仕様変更で bot login 名が変わる可能性があるため、差し替えはこの定数で行う。
+  const COPILOT_AGENT_LOGIN = 'copilot-swe-agent[bot]';
+  const COPILOT_TARGET_REPO = `${OWNER}/${REPO}`;
+  const COPILOT_BASE_BRANCH = 'main';
 
   const STATUS_CLASS_MAP = {
     info: 'muted',
@@ -18,6 +22,7 @@
   const clearPatButton = document.getElementById('clear-pat-button');
 
   let queuedIssues = [];
+  let isStartingIssue = false;
 
   function setStatus(elementId, message, type = 'info') {
     const element = document.getElementById(elementId);
@@ -75,6 +80,8 @@
     if (!hasPat) {
       setStatus('auth-status', '未設定', 'info');
     }
+
+    updateStartButtonState();
   }
 
   function savePat(token) {
@@ -164,7 +171,10 @@
     }
 
     if (!response.ok) {
-      throw new Error(buildGithubErrorMessage(response.status, payload, rateLimitRemaining));
+      const apiError = new Error(buildGithubErrorMessage(response.status, payload, rateLimitRemaining));
+      apiError.githubStatus = response.status;
+      apiError.githubPayload = payload;
+      throw apiError;
     }
 
     if (!text) {
@@ -274,10 +284,187 @@
         listEl.innerHTML = prevContent;
       }
     } finally {
+      updateStartButtonState();
       if (refreshButton) {
         refreshButton.disabled = false;
         refreshButton.textContent = '更新';
       }
+    }
+  }
+
+  function updateStartButtonState() {
+    const startButton = document.getElementById('start-button');
+    if (!startButton) {
+      return;
+    }
+
+    const canStart = Boolean(getPat()) && queuedIssues.length > 0 && !isStartingIssue;
+    startButton.disabled = !canStart;
+    startButton.textContent = isStartingIssue ? '開始中...' : '次の Issue を開始';
+  }
+
+  function getErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  function isAuthFailure(error) {
+    const status = error && typeof error === 'object' ? error.githubStatus : null;
+    return status === 401 || status === 403;
+  }
+
+  function renderInProgressIssue(issue) {
+    const listEl = document.getElementById('in-progress-list');
+    if (!listEl || !issue) {
+      return;
+    }
+
+    const title = escapeHtml(issue.title || '');
+    const number = issue.number;
+    const url = issue.html_url || `https://github.com/${OWNER}/${REPO}/issues/${number}`;
+    const itemHtml =
+      `<li class="queue-item">` +
+      `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
+      `<span class="queue-issue-number">#${number}</span>` +
+      `<span class="queue-issue-title">${title}</span>` +
+      `</a></li>`;
+
+    const onlyPlaceholder = listEl.children.length === 1 && listEl.children[0].classList.contains('muted');
+    if (onlyPlaceholder) {
+      listEl.innerHTML = itemHtml;
+      return;
+    }
+    listEl.insertAdjacentHTML('afterbegin', itemHtml);
+  }
+
+  async function assignIssueToCopilot(issue) {
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/assignees`;
+    await ghFetch(path, {
+      method: 'POST',
+      body: {
+        assignees: [COPILOT_AGENT_LOGIN],
+        agent_assignment: {
+          target_repo: COPILOT_TARGET_REPO,
+          base_branch: COPILOT_BASE_BRANCH,
+          custom_instructions: '',
+          custom_agent: '',
+          model: '',
+        },
+      },
+    });
+  }
+
+  async function addInProgressLabel(issue) {
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
+    await ghFetch(path, {
+      method: 'POST',
+      body: {
+        labels: ['in-progress'],
+      },
+    });
+  }
+
+  async function removeQueuedLabel(issue) {
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels/queued`;
+    try {
+      await ghFetch(path, { method: 'DELETE' });
+      return { removed: true };
+    } catch (error) {
+      if (error && typeof error === 'object' && error.githubStatus === 404) {
+        appendLog(`Issue #${issue.number}: queued ラベルは既に外れている可能性があります (404)。`, 'warning');
+        return { removed: false };
+      }
+      throw error;
+    }
+  }
+
+  async function handleStartNextIssue() {
+    if (isStartingIssue) {
+      return;
+    }
+    if (!getPat()) {
+      setStatus('start-status', '開始できません: PAT が未設定です', 'warning');
+      appendLog('開始処理を中止しました: PAT が未設定です。', 'warning');
+      return;
+    }
+
+    isStartingIssue = true;
+    updateStartButtonState();
+    setStatus('start-status', 'queued Issue を確認中...', 'info');
+
+    try {
+      const issues = await fetchQueuedIssues();
+      queuedIssues = issues;
+      renderQueuedIssues(issues);
+      updateStartButtonState();
+
+      if (issues.length === 0) {
+        setStatus('start-status', '開始できる queued Issue はありません', 'warning');
+        appendLog('開始対象の queued Issue がないため処理を終了しました。', 'warning');
+        return;
+      }
+
+      const targetIssue = issues[0];
+      appendLog(`開始対象 Issue を選択しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'info');
+
+      setStatus('start-status', `Issue #${targetIssue.number} を Copilot に割り当て中...`, 'info');
+      try {
+        await assignIssueToCopilot(targetIssue);
+        appendLog(`Issue #${targetIssue.number} を ${COPILOT_AGENT_LOGIN} に割り当てました。`, 'success');
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isAuthFailure(error)) {
+          setStatus('start-status', `開始できません: 認証に失敗しました (${message})`, 'error');
+          appendLog(`開始処理を中断しました: 認証エラー (${message})`, 'error');
+          return;
+        }
+        appendLog(`Copilot 割り当てに失敗しました (#${targetIssue.number}): ${message}`, 'error');
+        setStatus('start-status', `Copilot 割り当て失敗: ${message}`, 'error');
+        return;
+      }
+
+      setStatus('start-status', `Issue #${targetIssue.number} に in-progress ラベルを追加中...`, 'info');
+      try {
+        await addInProgressLabel(targetIssue);
+        appendLog(`Issue #${targetIssue.number} に in-progress ラベルを追加しました。`, 'success');
+      } catch (error) {
+        const message = getErrorMessage(error);
+        appendLog(`in-progress ラベル追加に失敗しました (#${targetIssue.number}): ${message}`, 'error');
+        appendLog(`Issue #${targetIssue.number} は割り当て済みですがラベル更新が途中で停止しました。`, 'warning');
+        setStatus('start-status', `in-progress ラベル追加失敗: ${message}`, 'error');
+        return;
+      }
+
+      setStatus('start-status', `Issue #${targetIssue.number} の queued ラベルを削除中...`, 'info');
+      try {
+        const result = await removeQueuedLabel(targetIssue);
+        if (result && result.removed === false) {
+          appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (既に削除済みの可能性)。`, 'warning');
+        } else {
+          appendLog(`Issue #${targetIssue.number} から queued ラベルを削除しました。`, 'success');
+        }
+      } catch (error) {
+        const message = getErrorMessage(error);
+        appendLog(`queued ラベル削除に失敗しました (#${targetIssue.number}): ${message}`, 'error');
+        appendLog(`Issue #${targetIssue.number} は割り当て済み・in-progress 追加済みですが queued 削除で停止しました。`, 'warning');
+        setStatus('start-status', `queued ラベル削除失敗: ${message}`, 'error');
+        return;
+      }
+
+      renderInProgressIssue(targetIssue);
+      setStatus('start-status', `開始しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'success');
+      appendLog(`開始処理が完了しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'success');
+      await loadQueue();
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (isAuthFailure(error)) {
+        setStatus('start-status', `開始できません: 認証に失敗しました (${message})`, 'error');
+      } else {
+        setStatus('start-status', `開始処理に失敗しました: ${message}`, 'error');
+      }
+      appendLog(`開始処理エラー: ${message}`, 'error');
+    } finally {
+      isStartingIssue = false;
+      updateStartButtonState();
     }
   }
 
@@ -374,6 +561,17 @@
         });
       });
     }
+
+    const startButton = document.getElementById('start-button');
+    if (startButton) {
+      startButton.addEventListener('click', () => {
+        handleStartNextIssue().catch((error) => {
+          const message = getErrorMessage(error);
+          appendLog(`予期しない開始処理エラー: ${message}`, 'error');
+          setStatus('start-status', `開始処理に失敗しました: ${message}`, 'error');
+        });
+      });
+    }
   }
 
   function registerServiceWorker() {
@@ -405,6 +603,7 @@
     setStatus,
     appendLog,
     getQueuedIssues,
+    handleStartNextIssue,
   };
 
   window.appState = {
