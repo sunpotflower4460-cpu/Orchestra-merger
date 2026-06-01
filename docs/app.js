@@ -80,6 +80,9 @@
     if (!normalized) {
       throw new Error('PAT を入力してください。');
     }
+    if (/\s/.test(normalized)) {
+      throw new Error('PAT に空白文字は使用できません。');
+    }
 
     localStorage.setItem(PAT_STORAGE_KEY, normalized);
     updateAuthUi();
@@ -107,7 +110,7 @@
     }
 
     if (status === 403) {
-      if (detail.toLowerCase().includes('rate limit') || rateLimitRemaining === 0) {
+      if ((detail && detail.toLowerCase().includes('rate limit')) || (rateLimitRemaining !== null && rateLimitRemaining <= 0)) {
         return `GitHub API のレート制限に達しました。しばらく待ってから再試行してください。${detail ? ` (${detail})` : ''}`;
       }
       return `アクセスが拒否されました。PAT の権限を確認してください。${detail ? ` (${detail})` : ''}`;
@@ -151,7 +154,12 @@
 
     const text = await response.text();
     const payload = text ? safeJsonParse(text) ?? { raw: text } : null;
-    const rateLimitRemaining = Number.parseInt(response.headers.get('x-ratelimit-remaining') || '', 10);
+    const rateLimitHeader = response.headers.get('x-ratelimit-remaining');
+    let rateLimitRemaining = null;
+    if (rateLimitHeader !== null) {
+      const parsed = Number.parseInt(rateLimitHeader, 10);
+      rateLimitRemaining = Number.isNaN(parsed) ? null : parsed;
+    }
 
     if (!response.ok) {
       throw new Error(buildGithubErrorMessage(response.status, payload, rateLimitRemaining));
@@ -225,7 +233,11 @@
   function bindEvents() {
     if (savePatButton) {
       savePatButton.addEventListener('click', () => {
-        void handleSavePat();
+        handleSavePat().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          setStatus('auth-status', `認証失敗: ${message}`, 'error');
+          appendLog(`予期しないエラー: ${message}`, 'error');
+        });
       });
     }
 
@@ -273,6 +285,10 @@
   }
   appendLog(`対象リポジトリ: ${OWNER}/${REPO}`, 'info');
   bindEvents();
-  void restoreAuthStateOnLoad();
+  restoreAuthStateOnLoad().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus('auth-status', `認証失敗: ${message}`, 'error');
+    appendLog(`初期化エラー: ${message}`, 'error');
+  });
   registerServiceWorker();
 })();
