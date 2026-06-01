@@ -371,7 +371,7 @@
       return { removed: true };
     } catch (error) {
       if (error && typeof error === 'object' && error.githubStatus === 404) {
-        appendLog(`Issue #${issue.number}: queued ラベルは既に外れている可能性があります (404)。`, 'warning');
+        appendLog(`Issue #${issue.number}: queued ラベルは既に外れています (404)。`, 'warning');
         return { removed: false };
       }
       throw error;
@@ -439,6 +439,7 @@
       setStatus('start-status', `Issue #${targetIssue.number} の queued ラベルを削除中...`, 'info');
       try {
         const result = await removeQueuedLabel(targetIssue);
+        // removed === false は 404 を警告扱いにして継続したケース。
         if (result && result.removed === false) {
           appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (既に削除済みの可能性)。`, 'warning');
         } else {
@@ -567,11 +568,7 @@
     const startButton = document.getElementById('start-button');
     if (startButton) {
       startButton.addEventListener('click', () => {
-        handleStartNextIssue().catch((error) => {
-          const message = getErrorMessage(error);
-          appendLog(`予期しない開始処理エラー: ${message}`, 'error');
-          setStatus('start-status', `開始処理に失敗しました: ${message}`, 'error');
-        });
+        handleStartNextIssue();
       });
     }
   }
