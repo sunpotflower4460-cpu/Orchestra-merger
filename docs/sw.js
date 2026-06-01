@@ -1,5 +1,12 @@
 const CACHE_NAME = 'orchestra-merger-static-v1';
 const STATIC_ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json'];
+const GITHUB_API_ORIGIN = 'https://api.github.com';
+const networkErrorResponse = () =>
+  new Response('Network request failed.', {
+    status: 503,
+    statusText: 'Service Unavailable',
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  });
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -27,10 +34,18 @@ self.addEventListener('fetch', (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
-  if (requestUrl.origin === 'https://api.github.com') {
-    event.respondWith(fetch(event.request));
+  if (requestUrl.origin === GITHUB_API_ORIGIN) {
+    event.respondWith(fetch(event.request).catch(() => networkErrorResponse()));
     return;
   }
 
-  event.respondWith(caches.match(event.request).then((cachedResponse) => cachedResponse || fetch(event.request)));
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+
+      return fetch(event.request).catch(() => networkErrorResponse());
+    }),
+  );
 });
