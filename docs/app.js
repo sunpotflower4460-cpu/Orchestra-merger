@@ -345,7 +345,7 @@
         agent_assignment: {
           target_repo: COPILOT_TARGET_REPO,
           base_branch: COPILOT_BASE_BRANCH,
-          // custom_* / model は未指定で Copilot 側デフォルトを使う。
+          // 要件どおり空文字を送って custom_* / model は Copilot 側デフォルトに委ねる。
           custom_instructions: '',
           custom_agent: '',
           model: '',
@@ -371,7 +371,7 @@
       return { removed: true };
     } catch (error) {
       if (error && typeof error === 'object' && error.githubStatus === 404) {
-        appendLog(`Issue #${issue.number}: queued ラベルは既に外れています (404)。`, 'warning');
+        appendLog(`Issue #${issue.number}: queued ラベルはすでに外れています (404)。`, 'warning');
         return { removed: false };
       }
       throw error;
@@ -440,8 +440,8 @@
       try {
         const result = await removeQueuedLabel(targetIssue);
         // removed === false は 404 を警告扱いにして継続したケース。
-        if (result && result.removed === false) {
-          appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (既に削除済みの可能性)。`, 'warning');
+        if (result.removed === false) {
+          appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (すでに削除済みの可能性)。`, 'warning');
         } else {
           appendLog(`Issue #${targetIssue.number} から queued ラベルを削除しました。`, 'success');
         }
