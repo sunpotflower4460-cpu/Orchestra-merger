@@ -1,141 +1,69 @@
 # Orchestra-merger
 
-# 🎻 Orchestra-merger
+Orchestra-merger は、GitHub Issues をキューとして扱い、GitHub Copilot coding agent に 1 件ずつ順番に作業を割り当て、PR の自動マージ・次 Issue への連鎖・全件完了時の通知までを行う小さなオーケストレーターです。
 
-整備済みの GitHub イシュー群を、**一度キックするだけ**で GitHub Copilot coding agent に1件ずつ順番に割り当て、自動マージしながら最後まで自走させ、**全部終わったらスマホに通知**するシンプルな自動化アプリです。
+> この README はプロジェクトの土台を整理するためのものです。PWA 画面、JavaScript ロジック、GitHub Actions workflow などの本体実装は今後の Issue で追加されます。
 
-人はコードを見ません。品質の最終防衛線は CI（テスト）が担います。
+## このアプリがやること
 
----
+- `queued` ラベルの付いた GitHub Issue を処理対象として扱う
+- 先頭の Issue を `queued` → `in-progress` に進める
+- Copilot coding agent に順番に割り当てる
+- Copilot が作成した PR の CI が通ったら自動マージする
+- マージ後に次の `queued` Issue へ連鎖して進む
+- すべて完了したら ntfy で通知する
 
-## コンセプト
+## 全体の流れ
 
-すでに丁寧に分割・記述されたイシューが大量にあるリポジトリで、人間に残された作業は「順番に Copilot へ投げてマージするだけ」になっています。Orchestra-merger は、その単調な反復だけを自動化します。
+1. 人が GitHub Issue を作成する
+2. 対象 Issue に `queued` ラベルを付ける
+3. GitHub Pages で配信される PWA から処理を開始する
+4. Copilot coding agent が PR を作成する
+5. CI 通過後に auto-merge する
+6. 次の `queued` Issue に連鎖して進む
+7. 全件完了時に ntfy で通知する
 
-具体的には次のサイクルを自走させます。
+## 前提条件
 
-1. **割り当て** — `queued` ラベルの付いたイシューのうち最も若い番号を1件選び、Copilot coding agent に割り当てる
-2. **マージ** — Copilot が作った PR の CI（テスト）が通れば自動マージする
-3. **次へ** — マージされたら次の `queued` イシューを割り当てる
-4. **通知** — キューが空になったら、スマホ（ntfy）に「全部終わったよ」と通知する
+Issue 0 の手動設定が完了している前提で進めます。
 
-人が触るのは最初の「開始」ボタンだけ。あとはクラウド側（GitHub Actions）が最後まで回します。
+- `queued` / `in-progress` ラベルが存在していること
+- GitHub Actions Secrets に `ORCHESTRA_PAT` / `NTFY_TOPIC` が登録されていること
+- GitHub Pages が `main` ブランチの `/docs` から配信されること
+- Copilot coding agent がこのリポジトリで利用可能になっていること
 
----
+Issue 0.5 の補助スクリプトと確認手順は [`SETUP_AUTOMATION.md`](./SETUP_AUTOMATION.md) を参照してください。
 
-## 全体の仕組み
+## セットアップ概要
 
-```
-スマホ PWA（操作盤）──①開始ボタン──▶ 先頭イシューを Copilot に割り当て
-                                          │
-                                          ▼
-                                   Copilot が PR を作成
-                                          │
-                       ┌──────────────────┘
-                       ▼
-        Workflow B: CI が緑なら自動マージ
-                       │
-                       ▼ （マージで起動）
-        Workflow A: 次の queued を Copilot に割り当て  ←─ 繰り返し
-                       │
-                       ▼ （キューが空に）
-        Workflow C: 5分ごとに完了を検知 → ntfy へ通知 ──▶ スマホに着信
-```
+1. Issue 0 の手動設定を完了する
+2. 必要なら `npm run setup:dry-run` で初期設定内容を確認する
+3. 必要なら `npm run setup:initial` で補助スクリプトを実行する
+4. `npm run check:initial` で Issue 1 に進める状態か確認する
+5. GitHub Pages の配信元を `main` / `docs` に設定する
+6. スマホまたは信頼できる端末で PWA を開き、運用準備を行う
 
-自走の心臓はクラウド側にあります。スマホ PWA は「最初のキック」と「進捗の可視化」だけを担当します。
+## 今後の Issue で実装される予定の機能
 
----
+- PWA 画面の実装
+- GitHub API を使ったキュー表示と開始操作
+- Copilot coding agent への順次割り当て処理
+- PR の auto-merge workflow
+- 次 Issue への連鎖 workflow
+- 完了時の ntfy 通知
+- 進捗確認と最低限の運用補助 UI
 
-## 構成ファイル
+## 注意点
 
-| パス | 役割 |
-|------|------|
-| `docs/index.html` | PWA の画面（キュー表示・開始ボタン） |
-| `docs/app.js` | GitHub API 呼び出し・進捗ポーリング |
-| `docs/manifest.json` | ホーム画面アプリ化の設定 |
-| `docs/sw.js` | 最小 Service Worker（インストール用） |
-| `.github/workflows/orchestrate.yml` | Workflow A：マージ後に次の1件を割り当て |
-| `.github/workflows/automerge.yml` | Workflow B：Copilot PR の自動マージ |
-| `.github/workflows/notify-complete.yml` | Workflow C：完了検知 → ntfy 通知 |
+- PAT をブラウザの `localStorage` に保存する設計です
+- 自分用・信頼端末用の小さな管理アプリとして扱ってください
+- GitHub / Copilot 側の仕様変更に影響される可能性があります
+- 品質は最終的に CI とテストの整備状況に大きく依存します
 
----
+## リポジトリの現状
 
-## イシューの状態管理
-
-3つの状態をラベルで表現します。
-
-| ラベル / 状態 | 意味 |
-|---------------|------|
-| `queued` | 順番待ち（事前に人が付ける） |
-| `in-progress` | Copilot が作業中（割り当て時に自動で切り替わる） |
-| クローズ済み | 完了（PR マージで自動クローズ） |
-
-処理したいイシューすべてに、あらかじめ `queued` ラベルを付けておいてください。
-
----
-
-## 初回セットアップ（最初の1回だけ）
-
-### 1. Copilot cloud agent を有効化
-[Copilot 設定 → Cloud agent](https://github.com/settings/copilot/coding_agent) を開き、Repository access を **All repositories** または **このリポジトリを選択** にする。
-（必要プラン：Copilot Pro / **Pro+** / Business / Enterprise のいずれか）
-
-### 2. ラベルを作成
-リポジトリの Issues → Labels で `queued` と `in-progress` を作成する。
-
-### 3. 自動マージとブランチ保護
-- Settings → General → Pull Requests で **Allow auto-merge** をオンにする
-- Settings → Branches で `main` にブランチ保護ルールを追加し、**テストの必須ステータスチェック**を設定する
-  （これが品質の最後の砦になります。テストが薄いと意図と違う PR でも通ってしまいます）
-
-### 4. シークレットを登録
-Settings → Secrets and variables → Actions で以下を登録する。
-
-| 名前 | 内容 |
-|------|------|
-| `ORCHESTRA_PAT` | fine-grained PAT（連鎖を切らさないために使用） |
-| `NTFY_TOPIC` | ntfy の秘密トピック名（推測されにくい文字列） |
-
-> **PAT の権限**：metadata（読み取り）、Actions・Contents・Issues・Pull requests（読み書き）。対象は Orchestra-merger のみで構いません。
->
-> なぜ PAT が必要か：GitHub Actions の `GITHUB_TOKEN` が起こしたイベントは別ワークフローを連鎖起動しません。マージ→次の割り当ての連鎖を成立させるために、要所で PAT を使います。
-
-### 5. GitHub Pages を有効化
-Settings → Pages で、Source を **Deploy from a branch**、ブランチを `main` / フォルダを `/docs` にする。数分後に `https://<ユーザー名>.github.io/Orchestra-merger/` で PWA が開けます。
-
-### 6. スマホに ntfy を入れる
-App Store / Google Play で **ntfy** アプリを入れ、手順4で決めた `NTFY_TOPIC` と同じトピック名を購読する。
-
-### 7. PWA をホーム画面に追加
-スマホのブラウザで PWA の URL を開き、共有メニューから「ホーム画面に追加」する。初回に fine-grained PAT を貼り付けて保存する（端末ローカルにのみ保存されます）。
-
----
-
-## 使い方
-
-1. 処理したいイシューすべてに `queued` ラベルを付ける
-2. ホーム画面の Orchestra-merger を開く
-3. キュー一覧を確認し、**「開始」**をタップする
-4. あとは放置。アプリを開いている間は進捗（残りキュー数・処理中・最近のマージ）が見られます
-5. すべて完了すると、ntfy アプリに通知が届きます
-
----
-
-## 注意点・割り切り
-
-- **品質は CI 任せ**：人はコードを見ない前提です。テストの網羅性がそのまま成果物の品質になります。
-- **通知は即時ではない**：完了検知は GitHub Actions の cron（最短5分間隔・混雑時は遅延あり）で動くため、完了から通知まで数分かかります。
-- **起動はイシュー割り当て経由のみ**：プロンプトを直接投げる Agent tasks API は Business / Enterprise 限定のため使いません。Pro+ でも確実に動く方式を採用しています。
-- **Copilot の利用枠**：coding agent のタスクは1件あたりプレミアムリクエストを1回消費します。キューの件数が枠を超えないか事前に確認してください。
-
----
-
-## 動作確認のコツ
-
-最初は **2〜3件だけ** `queued` を付けて試運転してください。特に「マージ → 次の割り当て」の連鎖が途切れないか（PAT が正しく効いているか）を確認するのが重要です。連鎖が止まる場合は、`ORCHESTRA_PAT` の権限とワークフロー内のトークン指定を見直してください。
-
----
+この Issue の時点では、README / LICENSE / `.gitignore` / `docs/.nojekyll` などの基盤ファイルを整える段階です。アプリ本体はまだ未実装であり、後続 Issue の実装者が迷わず進められるようにプロジェクトの目的と前提を固定することを目的としています。
 
 ## ライセンス
 
-（任意。MIT などを置く場合はここに記載）
+MIT License
