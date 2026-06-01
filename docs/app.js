@@ -17,6 +17,8 @@
   const savePatButton = document.getElementById('save-pat-button');
   const clearPatButton = document.getElementById('clear-pat-button');
 
+  let queuedIssues = [];
+
   function setStatus(elementId, message, type = 'info') {
     const element = document.getElementById(elementId);
     if (!element) {
@@ -180,6 +182,109 @@
     }
   }
 
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function fetchQueuedIssues() {
+    const allIssues = [];
+    let page = 1;
+
+    // TODO: このループは per_page=100 ずつページを送り全件取得を試みるが、
+    // GitHub API の Link ヘッダは ghFetch() 経由では参照できないため
+    // ページ末尾が 100 件未満になった時点で終端と判断する簡易実装です。
+    while (true) {
+      const path = `/repos/${OWNER}/${REPO}/issues?labels=queued&state=open&sort=created&direction=asc&per_page=100&page=${page}`;
+      const batch = await ghFetch(path);
+
+      if (!Array.isArray(batch) || batch.length === 0) {
+        break;
+      }
+
+      allIssues.push(...batch);
+
+      if (batch.length < 100) {
+        break;
+      }
+
+      page++;
+    }
+
+    const issues = allIssues.filter((item) => !item.pull_request);
+    issues.sort((a, b) => a.number - b.number);
+    return issues;
+  }
+
+  function renderQueuedIssues(issues) {
+    const countEl = document.getElementById('queue-count');
+    const listEl = document.getElementById('queue-list');
+
+    if (countEl) {
+      countEl.textContent = `残り ${issues.length} 件`;
+    }
+
+    if (!listEl) {
+      return;
+    }
+
+    if (issues.length === 0) {
+      listEl.innerHTML = '<li class="muted">キューは空です</li>';
+      return;
+    }
+
+    listEl.innerHTML = issues
+      .map((issue) => {
+        const number = issue.number;
+        const title = escapeHtml(issue.title || '');
+        const url = issue.html_url || `https://github.com/${OWNER}/${REPO}/issues/${number}`;
+        return (
+          `<li class="queue-item">` +
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
+          `<span class="queue-issue-number">#${number}</span>` +
+          `<span class="queue-issue-title">${title}</span>` +
+          `</a></li>`
+        );
+      })
+      .join('');
+  }
+
+  async function loadQueue() {
+    const refreshButton = document.getElementById('refresh-queue-button');
+    const listEl = document.getElementById('queue-list');
+    const prevContent = listEl ? listEl.innerHTML : null;
+
+    if (refreshButton) {
+      refreshButton.disabled = true;
+      refreshButton.textContent = '読み込み中...';
+    }
+
+    try {
+      const issues = await fetchQueuedIssues();
+      queuedIssues = issues;
+      renderQueuedIssues(issues);
+      appendLog(`queued Issue を取得しました: ${issues.length} 件`, 'info');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendLog(`queued Issue の取得に失敗しました: ${message}`, 'error');
+      if (listEl && prevContent !== null) {
+        listEl.innerHTML = prevContent;
+      }
+    } finally {
+      if (refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.textContent = '更新';
+      }
+    }
+  }
+
+  function getQueuedIssues() {
+    return queuedIssues;
+  }
+
   async function verifyPatAndUpdateStatus() {
     setStatus('auth-status', '確認中', 'info');
 
@@ -206,7 +311,10 @@
       if (!isVerified) {
         clearPat();
         setStatus('auth-status', '認証失敗: PAT を削除しました。再設定してください。', 'error');
+        // 認証失敗時はキューを読み込まない
+        return;
       }
+      await loadQueue();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus('auth-status', message, 'warning');
@@ -227,7 +335,11 @@
     if (!isVerified) {
       clearPat();
       setStatus('auth-status', '認証失敗: 保存済み PAT を削除しました。再設定してください。', 'error');
+      // 認証失敗時はキューを読み込まない
+      return;
     }
+
+    await loadQueue();
   }
 
   function bindEvents() {
@@ -246,6 +358,20 @@
         clearPat();
         setStatus('auth-status', '未設定', 'info');
         appendLog('PAT を削除しました。', 'warning');
+      });
+    }
+
+    const refreshQueueButton = document.getElementById('refresh-queue-button');
+    if (refreshQueueButton) {
+      refreshQueueButton.addEventListener('click', () => {
+        if (!getPat()) {
+          appendLog('PAT が未設定です。先に PAT を保存してください。', 'warning');
+          return;
+        }
+        loadQueue().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          appendLog(`予期しないエラー: ${message}`, 'error');
+        });
       });
     }
   }
@@ -278,6 +404,13 @@
     ghFetch,
     setStatus,
     appendLog,
+    getQueuedIssues,
+  };
+
+  window.appState = {
+    get queuedIssues() {
+      return queuedIssues;
+    },
   };
 
   if (appLog) {

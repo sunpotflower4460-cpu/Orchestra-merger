@@ -160,3 +160,35 @@ pre {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+.queue-item {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-item:last-child {
+  border-bottom: none;
+}
+
+.queue-issue-link {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.queue-issue-link:hover {
+  color: var(--primary);
+}
+
+.queue-issue-number {
+  font-weight: 600;
+  color: var(--primary);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.queue-issue-title {
+  word-break: break-word;
+}
