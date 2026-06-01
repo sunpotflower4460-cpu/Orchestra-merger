@@ -1,0 +1,162 @@
+:root {
+  color-scheme: light;
+  --bg: #edf2f8;
+  --card: #ffffff;
+  --text: #213245;
+  --muted: #5c6f82;
+  --border: #d5e0ec;
+  --primary: #2f5d8a;
+  --primary-hover: #274f75;
+  --secondary: #f7f9fc;
+  --status-success: #0f7a53;
+  --status-warning: #8a6500;
+  --status-error: #9c2f2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.app-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 1rem;
+  margin-top: 14px;
+}
+
+.card,
+header {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+label {
+  display: inline-block;
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: #fff;
+  color: var(--text);
+}
+
+button {
+  min-height: 44px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  padding: 10px 14px;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--primary-hover);
+}
+
+button.secondary {
+  background: var(--secondary);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.button-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+pre {
+  margin: 0;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f8fafd;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.repo-target {
+  margin-top: 10px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.status-success {
+  color: var(--status-success);
+}
+
+.status-warning {
+  color: var(--status-warning);
+}
+
+.status-error {
+  color: var(--status-error);
+}
+
+@media (min-width: 600px) {
+  .app-shell {
+    padding: 24px;
+    gap: 18px;
+  }
+
+  .card,
+  header {
+    padding: 18px;
+    box-shadow: 0 6px 16px rgb(26 45 65 / 6%);
+  }
+
+  .button-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
