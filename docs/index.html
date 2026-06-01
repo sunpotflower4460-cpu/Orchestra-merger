@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#2f5d8a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Orchestra Merger" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Orchestra Merger</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header>
+        <h1>Orchestra Merger</h1>
+        <p class="muted">
+          GitHub Issue キューを Copilot に順番に渡すための管理画面です。
+        </p>
+        <p class="repo-target" data-owner="sunpotflower4460-cpu" data-repo="Orchestra-merger">
+          対象リポジトリ: <strong>sunpotflower4460-cpu/Orchestra-merger</strong>
+        </p>
+      </header>
+
+      <section id="pat-section" class="card">
+        <h2>PAT</h2>
+        <label for="pat-input">GitHub Personal Access Token</label>
+        <input id="pat-input" type="password" autocomplete="off" placeholder="ghp_..." />
+        <div class="button-row">
+          <button id="save-pat-button" type="button">保存</button>
+          <button id="clear-pat-button" type="button" class="secondary">クリア</button>
+        </div>
+        <p id="auth-status" class="muted">未保存</p>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>キュー一覧</h2>
+          <button id="refresh-queue-button" type="button">更新</button>
+        </div>
+        <p>残り件数: <span id="queue-count">0</span></p>
+        <ul id="queue-list">
+          <li class="muted">まだ読み込まれていません</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>開始</h2>
+        <button id="start-button" type="button">次の Issue を開始</button>
+        <p id="start-status" class="muted">待機中</p>
+      </section>
+
+      <section id="progress-section" class="card">
+        <h2>進捗</h2>
+        <h3>処理中 Issue</h3>
+        <ul id="in-progress-list">
+          <li class="muted">なし</li>
+        </ul>
+
+        <h3>オープン PR</h3>
+        <ul id="open-pr-list">
+          <li class="muted">なし</li>
+        </ul>
+
+        <h3>最近のマージ</h3>
+        <ul id="recent-merge-list">
+          <li class="muted">なし</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>ログ / メッセージ</h2>
+        <pre id="app-log" aria-live="polite">アプリを初期化しています...</pre>
+      </section>
+    </main>
+  </body>
+</html>
