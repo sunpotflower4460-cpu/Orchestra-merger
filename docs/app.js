@@ -345,6 +345,7 @@
         agent_assignment: {
           target_repo: COPILOT_TARGET_REPO,
           base_branch: COPILOT_BASE_BRANCH,
+          // custom_* / model は未指定で Copilot 側デフォルトを使う。
           custom_instructions: '',
           custom_agent: '',
           model: '',
@@ -403,6 +404,7 @@
         return;
       }
 
+      // fetchQueuedIssues() が番号昇順で返すため先頭を開始対象にする。
       const targetIssue = issues[0];
       appendLog(`開始対象 Issue を選択しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'info');
 
