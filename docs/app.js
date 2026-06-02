@@ -7,6 +7,7 @@
   const COPILOT_AGENT_LOGIN = 'copilot-swe-agent[bot]';
   const COPILOT_TARGET_REPO = `${OWNER}/${REPO}`;
   const COPILOT_BASE_BRANCH = 'main';
+  const POLL_INTERVAL_MS = 30000;
 
   const STATUS_CLASS_MAP = {
     info: 'muted',
@@ -23,6 +24,10 @@
 
   let queuedIssues = [];
   let isStartingIssue = false;
+  let pollingTimerId = null;
+  let isPolling = false;
+  let isRefreshingProgress = false;
+  let lastProgressSnapshot = null;
 
   function setStatus(elementId, message, type = 'info') {
     const element = document.getElementById(elementId);
@@ -79,6 +84,7 @@
 
     if (!hasPat) {
       setStatus('auth-status', '未設定', 'info');
+      stopProgressPolling();
     }
 
     updateStartButtonState();
@@ -262,34 +268,289 @@
       .join('');
   }
 
-  async function loadQueue() {
-    const refreshButton = document.getElementById('refresh-queue-button');
-    const listEl = document.getElementById('queue-list');
-    const prevContent = listEl ? listEl.innerHTML : null;
+  function renderInProgressIssues(issues) {
+    const listEl = document.getElementById('in-progress-list');
+    if (!listEl) {
+      return;
+    }
 
-    if (refreshButton) {
+    if (!Array.isArray(issues) || issues.length === 0) {
+      listEl.innerHTML = '<li class="muted">処理中の Issue はありません</li>';
+      return;
+    }
+
+    listEl.innerHTML = issues
+      .map((issue) => {
+        const number = issue.number;
+        const title = escapeHtml(issue.title || '');
+        const url = issue.html_url || `https://github.com/${OWNER}/${REPO}/issues/${number}`;
+        return (
+          `<li class="queue-item">` +
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
+          `<span class="queue-issue-number">#${number}</span>` +
+          `<span class="queue-issue-title">${title}</span>` +
+          `</a></li>`
+        );
+      })
+      .join('');
+  }
+
+  function renderOpenPullRequests(pulls) {
+    const listEl = document.getElementById('open-pr-list');
+    if (!listEl) {
+      return;
+    }
+
+    if (!Array.isArray(pulls) || pulls.length === 0) {
+      listEl.innerHTML = '<li class="muted">オープン PR はありません</li>';
+      return;
+    }
+
+    listEl.innerHTML = pulls
+      .map((pr) => {
+        const number = pr.number;
+        const title = escapeHtml(pr.title || '');
+        const url = pr.html_url || `https://github.com/${OWNER}/${REPO}/pull/${number}`;
+        const login = pr.user && typeof pr.user.login === 'string' ? pr.user.login : 'unknown';
+        const draftLabel = pr.draft ? ' / Draft' : '';
+        const copilotLabel = login === COPILOT_AGENT_LOGIN ? ' / Copilot' : '';
+        return (
+          `<li class="queue-item">` +
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
+          `<span class="queue-issue-number">#${number}</span>` +
+          `<span class="queue-issue-title">${title}</span>` +
+          `</a>` +
+          `<span class="muted"> by ${escapeHtml(login)}${draftLabel}${copilotLabel}</span>` +
+          `</li>`
+        );
+      })
+      .join('');
+  }
+
+  function formatDateTime(value) {
+    if (!value) {
+      return '-';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '-';
+    }
+    return date.toLocaleString('ja-JP', { hour12: false });
+  }
+
+  function renderRecentMerges(pulls) {
+    const listEl = document.getElementById('recent-merge-list');
+    if (!listEl) {
+      return;
+    }
+
+    if (!Array.isArray(pulls) || pulls.length === 0) {
+      listEl.innerHTML = '<li class="muted">最近のマージはまだありません</li>';
+      return;
+    }
+
+    listEl.innerHTML = pulls
+      .map((pr) => {
+        const number = pr.number;
+        const title = escapeHtml(pr.title || '');
+        const url = pr.html_url || `https://github.com/${OWNER}/${REPO}/pull/${number}`;
+        const mergedAt = formatDateTime(pr.merged_at);
+        return (
+          `<li class="queue-item">` +
+          `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
+          `<span class="queue-issue-number">#${number}</span>` +
+          `<span class="queue-issue-title">${title}</span>` +
+          `</a>` +
+          `<span class="muted"> (merged: ${escapeHtml(mergedAt)})</span>` +
+          `</li>`
+        );
+      })
+      .join('');
+  }
+
+  async function fetchInProgressIssues() {
+    const path =
+      `/repos/${OWNER}/${REPO}/issues?labels=in-progress&state=open&sort=created` +
+      `&direction=asc&per_page=100`;
+    const result = await ghFetch(path);
+    const issues = Array.isArray(result) ? result.filter((item) => !item.pull_request) : [];
+    issues.sort((a, b) => a.number - b.number);
+    return issues;
+  }
+
+  async function fetchOpenPullRequests() {
+    const path = `/repos/${OWNER}/${REPO}/pulls?state=open&sort=created&direction=desc&per_page=20`;
+    const result = await ghFetch(path);
+    return Array.isArray(result) ? result : [];
+  }
+
+  async function fetchRecentMergedPullRequests() {
+    const path = `/repos/${OWNER}/${REPO}/pulls?state=closed&sort=updated&direction=desc&per_page=20`;
+    const result = await ghFetch(path);
+    const merged = Array.isArray(result) ? result.filter((item) => item && item.merged_at) : [];
+    merged.sort((a, b) => {
+      const timeA = new Date(a.merged_at || 0).getTime();
+      const timeB = new Date(b.merged_at || 0).getTime();
+      return timeB - timeA;
+    });
+    return merged.slice(0, 5);
+  }
+
+  function setProgressLastUpdated(message) {
+    const el = document.getElementById('progress-last-updated');
+    if (!el) {
+      return;
+    }
+    el.textContent = message;
+  }
+
+  function stopProgressPolling() {
+    if (pollingTimerId !== null) {
+      clearInterval(pollingTimerId);
+      pollingTimerId = null;
+    }
+    isPolling = false;
+  }
+
+  function startProgressPolling() {
+    if (isPolling || pollingTimerId !== null) {
+      return;
+    }
+    if (!getPat() || document.visibilityState !== 'visible') {
+      return;
+    }
+
+    isPolling = true;
+    pollingTimerId = window.setInterval(() => {
+      refreshProgress().catch((error) => {
+        appendLog(`進捗更新で予期しないエラーが発生しました: ${getErrorMessage(error)}`, 'error');
+      });
+    }, POLL_INTERVAL_MS);
+  }
+
+  async function refreshProgress(options = {}) {
+    if (isRefreshingProgress) {
+      return;
+    }
+
+    const withButtonState = Boolean(options.withButtonState);
+    const refreshButton = document.getElementById('refresh-queue-button');
+    if (withButtonState && refreshButton) {
       refreshButton.disabled = true;
       refreshButton.textContent = '読み込み中...';
     }
 
+    if (!getPat()) {
+      stopProgressPolling();
+      if (withButtonState && refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.textContent = '更新';
+      }
+      return;
+    }
+
+    isRefreshingProgress = true;
+    let authFailureDetected = false;
+
     try {
-      const issues = await fetchQueuedIssues();
-      queuedIssues = issues;
-      renderQueuedIssues(issues);
-      appendLog(`queued Issue を取得しました: ${issues.length} 件`, 'info');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      appendLog(`queued Issue の取得に失敗しました: ${message}`, 'error');
-      if (listEl && prevContent !== null) {
-        listEl.innerHTML = prevContent;
+      try {
+        const issues = await fetchQueuedIssues();
+        queuedIssues = issues;
+        renderQueuedIssues(issues);
+      } catch (error) {
+        appendLog(`queued Issue の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
+        authFailureDetected = authFailureDetected || isAuthFailure(error);
+      }
+
+      if (!authFailureDetected) {
+        try {
+          const inProgressIssues = await fetchInProgressIssues();
+          renderInProgressIssues(inProgressIssues);
+        } catch (error) {
+          appendLog(`in-progress Issue の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
+          authFailureDetected = authFailureDetected || isAuthFailure(error);
+        }
+      }
+
+      if (!authFailureDetected) {
+        try {
+          const openPullRequests = await fetchOpenPullRequests();
+          renderOpenPullRequests(openPullRequests);
+        } catch (error) {
+          appendLog(`オープン PR の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
+          authFailureDetected = authFailureDetected || isAuthFailure(error);
+        }
+      }
+
+      if (!authFailureDetected) {
+        try {
+          const recentMergedPullRequests = await fetchRecentMergedPullRequests();
+          renderRecentMerges(recentMergedPullRequests);
+          const now = new Date();
+          lastProgressSnapshot = {
+            queuedCount: queuedIssues.length,
+            inProgressCount: document.querySelectorAll('#in-progress-list .queue-item').length,
+            openPrCount: document.querySelectorAll('#open-pr-list .queue-item').length,
+            recentMergeCount: recentMergedPullRequests.length,
+            updatedAt: now.toISOString(),
+          };
+          setProgressLastUpdated(`最終更新: ${now.toLocaleTimeString('ja-JP', { hour12: false })}`);
+        } catch (error) {
+          appendLog(`最近のマージ情報の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
+          authFailureDetected = authFailureDetected || isAuthFailure(error);
+        }
+      }
+
+      if (authFailureDetected) {
+        stopProgressPolling();
       }
     } finally {
+      isRefreshingProgress = false;
       updateStartButtonState();
-      if (refreshButton) {
+      if (withButtonState && refreshButton) {
         refreshButton.disabled = false;
         refreshButton.textContent = '更新';
       }
     }
+  }
+
+  async function loadQueue() {
+    await refreshProgress({ withButtonState: true });
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === 'visible') {
+      if (!getPat()) {
+        return;
+      }
+      refreshProgress().catch((error) => {
+        appendLog(`再表示時の更新に失敗しました: ${getErrorMessage(error)}`, 'error');
+      });
+      startProgressPolling();
+      return;
+    }
+
+    stopProgressPolling();
+  }
+
+  function getLastProgressSnapshot() {
+    return lastProgressSnapshot;
+  }
+
+  function getIsPolling() {
+    return isPolling;
+  }
+
+  function getPollingIntervalMs() {
+    return POLL_INTERVAL_MS;
+  }
+
+  function getPollingTimerId() {
+    return pollingTimerId;
+  }
+
+  function getIsRefreshingProgress() {
+    return isRefreshingProgress;
   }
 
   function updateStartButtonState() {
@@ -488,6 +749,7 @@
       const message = error instanceof Error ? error.message : String(error);
       setStatus('auth-status', `認証失敗: ${message}`, 'error');
       appendLog(`GitHub 認証に失敗しました: ${message}`, 'error');
+      stopProgressPolling();
       return false;
     }
   }
@@ -504,7 +766,8 @@
         // 認証失敗時はキューを読み込まない
         return;
       }
-      await loadQueue();
+      await refreshProgress({ withButtonState: true });
+      startProgressPolling();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus('auth-status', message, 'warning');
@@ -529,7 +792,8 @@
       return;
     }
 
-    await loadQueue();
+    await refreshProgress({ withButtonState: true });
+    startProgressPolling();
   }
 
   function bindEvents() {
@@ -545,8 +809,10 @@
 
     if (clearPatButton) {
       clearPatButton.addEventListener('click', () => {
+        stopProgressPolling();
         clearPat();
         setStatus('auth-status', '未設定', 'info');
+        setProgressLastUpdated('最終更新: 未実行');
         appendLog('PAT を削除しました。', 'warning');
       });
     }
@@ -558,7 +824,7 @@
           appendLog('PAT が未設定です。先に PAT を保存してください。', 'warning');
           return;
         }
-        loadQueue().catch((error) => {
+        refreshProgress({ withButtonState: true }).catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           appendLog(`予期しないエラー: ${message}`, 'error');
         });
@@ -571,6 +837,8 @@
         handleStartNextIssue();
       });
     }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
   }
 
   function registerServiceWorker() {
@@ -603,6 +871,14 @@
     appendLog,
     getQueuedIssues,
     handleStartNextIssue,
+    refreshProgress,
+    startProgressPolling,
+    stopProgressPolling,
+    getLastProgressSnapshot,
+    getIsPolling,
+    getPollingIntervalMs,
+    getPollingTimerId,
+    getIsRefreshingProgress,
   };
 
   window.appState = {
@@ -614,6 +890,7 @@
   if (appLog) {
     appLog.textContent = '';
   }
+  setProgressLastUpdated('最終更新: 未実行');
   appendLog(`対象リポジトリ: ${OWNER}/${REPO}`, 'info');
   bindEvents();
   restoreAuthStateOnLoad().catch((error) => {
