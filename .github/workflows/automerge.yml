@@ -17,8 +17,11 @@ jobs:
     # Keep `copilot-swe-agent[bot]` as a fallback for possible GitHub identity changes.
     # Human-authored PRs must not trigger this auto-merge job.
     if: >
-      github.event.pull_request.user.login == 'Copilot' ||
-      github.event.pull_request.user.login == 'copilot-swe-agent[bot]'
+      github.event_name == 'pull_request' &&
+      (
+        github.event.pull_request.user.login == 'Copilot' ||
+        github.event.pull_request.user.login == 'copilot-swe-agent[bot]'
+      )
     env:
       GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
 
@@ -35,23 +38,45 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "PR number : ${{ github.event.pull_request.number }}"
+          echo "PR number       : ${{ github.event.pull_request.number }}"
           echo "PR author login : ${{ github.event.pull_request.user.login }}"
-          echo "PR title  : ${PR_TITLE}"
-          echo "PR draft  : ${{ github.event.pull_request.draft }}"
+          echo "PR title        : ${PR_TITLE}"
+          echo "PR draft        : ${{ github.event.pull_request.draft }}"
+          echo "Changed files   : ${{ github.event.pull_request.changed_files }}"
 
-      - name: Convert draft PR to ready for review
-        if: github.event.pull_request.draft
+      - name: Skip unsafe early PR states
+        id: safety
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         run: |
-          echo "PR is a draft. Attempting to mark as ready for review..."
-          if gh pr ready ${{ github.event.pull_request.number }} \
-              --repo "${{ github.repository }}"; then
-            echo "Successfully marked PR as ready for review."
+          set -euo pipefail
+
+          should_skip=false
+          reason=""
+
+          if [ "${PR_DRAFT}" = "true" ]; then
+            should_skip=true
+            reason="PR is still draft."
+          elif [[ "${PR_TITLE}" == \[WIP\]* ]] || [[ "${PR_TITLE}" == WIP* ]]; then
+            should_skip=true
+            reason="PR title is WIP."
+          elif [ "${CHANGED_FILES}" -eq 0 ]; then
+            should_skip=true
+            reason="PR has zero changed files."
+          fi
+
+          if [ "${should_skip}" = "true" ]; then
+            echo "Skipping auto-merge setup: ${reason}"
+            echo "should_merge=false" >> "${GITHUB_OUTPUT}"
           else
-            echo "::warning::Failed to mark PR as ready for review. Proceeding anyway."
+            echo "PR passed auto-merge safety gate."
+            echo "should_merge=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Enable auto-merge (squash)
+        if: steps.safety.outputs.should_merge == 'true'
         run: |
           echo "Enabling auto-merge (squash) for PR #${{ github.event.pull_request.number }}..."
           MERGE_OUTPUT=$(gh pr merge ${{ github.event.pull_request.number }} \
