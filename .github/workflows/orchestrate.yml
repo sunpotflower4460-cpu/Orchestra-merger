@@ -43,6 +43,129 @@ jobs:
             echo "Merged PR: #${{ github.event.pull_request.number }}"
           fi
 
+      - name: Finalize linked issue from merged PR
+        if: github.event_name == 'pull_request'
+        env:
+          MERGED_PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+
+          echo "Merged PR number: #${MERGED_PR_NUMBER}"
+          echo "PR author login: ${PR_AUTHOR_LOGIN}"
+          echo "PR head branch: ${PR_HEAD_BRANCH}"
+
+          repo_slug_lc="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          candidate_numbers=()
+
+          body_matches="$(printf '%s\n' "${PR_BODY:-}" | grep -Eio '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]:]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)' || true)"
+          if [ -n "${body_matches}" ]; then
+            echo "Found potential linked issues in PR body:"
+            echo "${body_matches}"
+            while IFS= read -r match; do
+              [ -n "${match}" ] || continue
+              if [[ "${match}" =~ [[:space:]:]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)$ ]]; then
+                linked_repo="${BASH_REMATCH[1]}"
+                linked_issue="${BASH_REMATCH[2]}"
+                linked_repo_lc="$(echo "${linked_repo}" | tr '[:upper:]' '[:lower:]')"
+                if [ -n "${linked_repo}" ] && [ "${linked_repo_lc}" != "${repo_slug_lc}" ]; then
+                  echo "::warning::Skipping cross-repo linked issue reference: ${linked_repo}#${linked_issue}"
+                  continue
+                fi
+                candidate_numbers+=("${linked_issue}")
+              fi
+            done <<< "${body_matches}"
+          fi
+
+          if [ "${#candidate_numbers[@]}" -eq 0 ]; then
+            if [[ "${PR_HEAD_BRANCH}" =~ (^|[-_/])issue-([0-9]+)($|[-_/]) ]]; then
+              candidate_numbers+=("${BASH_REMATCH[2]}")
+              echo "No PR body link found. Using branch issue candidate: #${BASH_REMATCH[2]}"
+            fi
+          fi
+
+          if [ "${#candidate_numbers[@]}" -eq 0 ]; then
+            echo "No PR body or branch issue match found. Checking open in-progress issues as fallback."
+            in_progress_json="$(gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" 2>/dev/null || true)"
+            if [ -n "${in_progress_json}" ]; then
+              mapfile -t in_progress_numbers < <(jq -r '.[] | select(.pull_request | not) | .number' <<< "${in_progress_json}")
+              if [ "${#in_progress_numbers[@]}" -eq 1 ]; then
+                candidate_numbers+=("${in_progress_numbers[0]}")
+                echo "Fallback selected the only open in-progress issue: #${in_progress_numbers[0]}"
+              elif [ "${#in_progress_numbers[@]}" -eq 0 ]; then
+                echo "::warning::No open in-progress issue found for fallback resolution."
+              else
+                echo "::warning::Multiple open in-progress issues found (${#in_progress_numbers[@]}). Not guessing."
+              fi
+            else
+              echo "::warning::Failed to query open in-progress issues for fallback resolution."
+            fi
+          fi
+
+          if [ "${#candidate_numbers[@]}" -eq 0 ]; then
+            echo "Candidate linked issue numbers: (none)"
+            echo "::warning::No safe linked issue candidate could be resolved from merged PR #${MERGED_PR_NUMBER}."
+            exit 0
+          fi
+
+          mapfile -t unique_candidates < <(printf '%s\n' "${candidate_numbers[@]}" | awk 'NF' | sort -n | uniq)
+          echo "Candidate linked issue numbers: ${unique_candidates[*]}"
+
+          final_numbers=()
+          for issue_number in "${unique_candidates[@]}"; do
+            issue_json="$(gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/issues/${issue_number}" 2>/dev/null || true)"
+            if [ -z "${issue_json}" ]; then
+              echo "::warning::Unable to load candidate issue #${issue_number}. Skipping."
+              continue
+            fi
+
+            if jq -e '.pull_request != null' >/dev/null <<< "${issue_json}"; then
+              echo "::warning::Candidate #${issue_number} is a pull request object. Skipping."
+              continue
+            fi
+
+            issue_state="$(jq -r '.state' <<< "${issue_json}")"
+            if [ "${issue_state}" != "open" ]; then
+              echo "::warning::Candidate issue #${issue_number} is not open (state=${issue_state}). Skipping."
+              continue
+            fi
+
+            final_numbers+=("${issue_number}")
+          done
+
+          if [ "${#final_numbers[@]}" -eq 0 ]; then
+            echo "Final issue numbers selected for cleanup: (none)"
+            echo "::warning::No safe linked issue remained after validation for merged PR #${MERGED_PR_NUMBER}."
+            exit 0
+          fi
+
+          echo "Final issue numbers selected for cleanup: ${final_numbers[*]}"
+          for issue_number in "${final_numbers[@]}"; do
+            # Completion policy: remove `in-progress` and close the linked issue as completed.
+            in_progress_removed="false"
+            issue_closed="false"
+
+            if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "in-progress" >/dev/null 2>&1; then
+              in_progress_removed="true"
+            else
+              echo "::warning::Failed to remove 'in-progress' from issue #${issue_number}."
+            fi
+
+            if gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" --comment "Closing as completed because merged PR #${MERGED_PR_NUMBER} implemented this issue." >/dev/null 2>&1; then
+              issue_closed="true"
+            else
+              echo "::warning::Failed to close linked issue #${issue_number}."
+            fi
+
+            echo "Issue #${issue_number}: in-progress removed=${in_progress_removed}, closed=${issue_closed}"
+          done
+
       - name: Find next queued issue
         id: pick
         run: |
