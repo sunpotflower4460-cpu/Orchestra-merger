@@ -27,14 +27,16 @@ jobs:
           echo "ORCHESTRA_PAT is set."
 
       - name: Show PR info
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "PR number : ${{ github.event.pull_request.number }}"
           echo "PR author : ${{ github.event.pull_request.user.login }}"
-          echo "PR title  : ${{ github.event.pull_request.title }}"
+          echo "PR title  : ${PR_TITLE}"
           echo "PR draft  : ${{ github.event.pull_request.draft }}"
 
       - name: Convert draft PR to ready for review
-        if: github.event.pull_request.draft == true
+        if: github.event.pull_request.draft
         run: |
           echo "PR is a draft. Attempting to mark as ready for review..."
           if gh pr ready ${{ github.event.pull_request.number }} \
