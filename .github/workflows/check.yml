@@ -1,0 +1,92 @@
+name: CI Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci-check:
+    name: ci-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify required files exist
+        run: |
+          set -euo pipefail
+
+          echo "== Required files =="
+          required_files=(
+            "README.md"
+            "package.json"
+            "docs/index.html"
+            "docs/style.css"
+            "docs/sw.js"
+            "docs/app.js"
+            "docs/manifest.json"
+            ".github/workflows/orchestrate.yml"
+            ".github/workflows/automerge.yml"
+          )
+
+          missing=0
+          for file in "${required_files[@]}"; do
+            if [ -f "${file}" ]; then
+              echo "[ok] ${file}"
+            else
+              echo "[missing] ${file}"
+              missing=1
+            fi
+          done
+
+          if [ "${missing}" -ne 0 ]; then
+            echo "One or more required files are missing."
+            exit 1
+          fi
+
+      - name: Validate JavaScript syntax
+        run: |
+          set -euo pipefail
+
+          echo "== JavaScript syntax =="
+          node --check docs/app.js
+          node --check docs/sw.js
+
+      - name: Validate JSON syntax
+        run: |
+          set -euo pipefail
+
+          echo "== JSON syntax =="
+          jq -e . docs/manifest.json >/dev/null
+          jq -e . package.json >/dev/null
+          echo "[ok] docs/manifest.json"
+          echo "[ok] package.json"
+
+      - name: Validate workflow YAML syntax
+        run: |
+          set -euo pipefail
+
+          echo "== Workflow YAML syntax =="
+          ruby - <<'RUBY'
+          require 'yaml'
+
+          workflow_files = Dir.glob('.github/workflows/*.{yml,yaml}').sort
+
+          if workflow_files.empty?
+            warn '[error] No workflow YAML files found.'
+            exit 1
+          end
+
+          workflow_files.each do |path|
+            begin
+              YAML.parse_stream(File.read(path))
+              puts "[ok] #{path}"
+            rescue Psych::SyntaxError => e
+              warn "[error] #{path}: #{e.message}"
+              exit 1
+            end
+          end
+          RUBY
