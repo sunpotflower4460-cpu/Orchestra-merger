@@ -2,7 +2,7 @@ name: Copilot Auto Merge
 
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened, synchronize]
+    types: [opened, ready_for_review, reopened, synchronize, edited]
   workflow_dispatch:
 
 permissions:
@@ -48,6 +48,7 @@ jobs:
         id: safety
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         run: |
@@ -62,9 +63,12 @@ jobs:
           elif [[ "${PR_TITLE}" == \[WIP\]* ]] || [[ "${PR_TITLE}" == WIP* ]]; then
             should_skip=true
             reason="PR title is WIP."
-          elif [ "${CHANGED_FILES}" -eq 0 ]; then
+          elif [ "${CHANGED_FILES:-0}" -eq 0 ]; then
             should_skip=true
             reason="PR has zero changed files."
+          elif grep -qi "Thanks for asking me to work on this\. I will get started" <<< "${PR_BODY:-}"; then
+            should_skip=true
+            reason="PR body still contains Copilot's initial placeholder text."
           fi
 
           if [ "${should_skip}" = "true" ]; then
