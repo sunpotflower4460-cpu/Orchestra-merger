@@ -68,7 +68,7 @@ jobs:
             -H 'Accept: application/vnd.github+json' \
             "/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
             --jq '.[]' | jq -s '.')"
-          copilot_pr_count="$(jq '[.[] | select((.user.login | ascii_downcase) == "copilot" or .user.login == "copilot-swe-agent[bot]")] | length' <<< "${pulls_json}")"
+          copilot_pr_count="$(jq '[.[] | select((.user.login | ascii_downcase) == "copilot" or (.user.login | ascii_downcase) == "copilot-swe-agent[bot]")] | length' <<< "${pulls_json}")"
 
           notified_raw="false"
           notified_state="false"
@@ -148,6 +148,11 @@ jobs:
             if ! [[ "${NTFY_TOPIC}" =~ ^[A-Za-z0-9_-]+$ ]]; then
               echo "Decision: notification skipped due to missing configuration"
               echo "::warning::NTFY_TOPIC format is invalid. Use only letters, numbers, hyphen, and underscore."
+              exit 0
+            fi
+            if [[ "${NTFY_TOPIC}" == *"/"* || "${NTFY_TOPIC}" == *".."* ]]; then
+              echo "Decision: notification skipped due to missing configuration"
+              echo "::warning::NTFY_TOPIC format is invalid."
               exit 0
             fi
 
