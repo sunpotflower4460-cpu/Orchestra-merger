@@ -8,6 +8,8 @@ jobs:
   ci-check:
     name: ci-check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -80,7 +82,7 @@ jobs:
 
           workflow_files.each do |path|
             begin
-              YAML.safe_load(File.read(path), permitted_classes: [], aliases: true)
+              YAML.parse_stream(File.read(path))
               puts "[ok] #{path}"
             rescue Psych::SyntaxError => e
               warn "[error] #{path}: #{e.message}"
