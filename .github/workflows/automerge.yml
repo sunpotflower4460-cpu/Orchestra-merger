@@ -2,7 +2,12 @@ name: Copilot Auto Merge
 
 on:
   pull_request:
-    types: [opened, ready_for_review, reopened, synchronize, edited]
+    # Transitional safety guard: Copilot can open a draft/WIP placeholder PR before
+    # implementation exists. Until CI checks from issue #26 and required checks are in
+    # place, the safe auto-merge path is:
+    # CI success + required check + non-WIP Copilot PR = safe auto-merge path.
+    # Avoid pull_request.opened so placeholder PR creation never enables auto-merge.
+    types: [ready_for_review, synchronize, edited, reopened]
   workflow_dispatch:
 
 permissions:
@@ -34,45 +39,73 @@ jobs:
           fi
           echo "ORCHESTRA_PAT is set."
 
+      - name: Fetch current PR state
+        id: pr
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          pr_json=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json title,body,isDraft,author)
+          changed_files=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' | awk 'END { print NR }')
+
+          {
+            echo "title<<EOF"
+            jq -r '.title' <<< "${pr_json}"
+            echo "EOF"
+            echo "body<<EOF"
+            jq -r '.body // ""' <<< "${pr_json}"
+            echo "EOF"
+            echo "is_draft=$(jq -r '.isDraft' <<< "${pr_json}")"
+            echo "author_login=$(jq -r '.author.login // ""' <<< "${pr_json}")"
+            echo "changed_files=${changed_files}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Show PR info
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
+          PR_CHANGED_FILES: ${{ steps.pr.outputs.changed_files }}
+          PR_AUTHOR_LOGIN: ${{ steps.pr.outputs.author_login }}
         run: |
           echo "PR number       : ${{ github.event.pull_request.number }}"
-          echo "PR author login : ${{ github.event.pull_request.user.login }}"
+          echo "PR author login : ${PR_AUTHOR_LOGIN}"
           echo "PR title        : ${PR_TITLE}"
-          echo "PR draft        : ${{ github.event.pull_request.draft }}"
-          echo "Changed files   : ${{ github.event.pull_request.changed_files }}"
+          echo "PR draft        : ${PR_DRAFT}"
+          echo "Changed files   : ${PR_CHANGED_FILES}"
 
       - name: Skip unsafe early PR states
         id: safety
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          PR_DRAFT: ${{ github.event.pull_request.draft }}
-          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
+          CHANGED_FILES: ${{ steps.pr.outputs.changed_files }}
         run: |
           set -euo pipefail
 
-          should_skip=false
-          reason=""
+          reasons=()
 
           if [ "${PR_DRAFT}" = "true" ]; then
-            should_skip=true
-            reason="PR is still draft."
-          elif [[ "${PR_TITLE}" == \[WIP\]* ]] || [[ "${PR_TITLE}" == WIP* ]]; then
-            should_skip=true
-            reason="PR title is WIP."
-          elif [ "${CHANGED_FILES:-0}" -eq 0 ]; then
-            should_skip=true
-            reason="PR has zero changed files."
-          elif grep -qi "Thanks for asking me to work on this\. I will get started" <<< "${PR_BODY:-}"; then
-            should_skip=true
-            reason="PR body still contains Copilot's initial placeholder text."
+            reasons+=("PR is draft")
           fi
 
-          if [ "${should_skip}" = "true" ]; then
-            echo "Skipping auto-merge setup: ${reason}"
+          if [[ "${PR_TITLE}" == \[WIP\]* ]] || [[ "${PR_TITLE}" == WIP* ]]; then
+            reasons+=("PR is WIP")
+          fi
+
+          if [ "${CHANGED_FILES:-0}" -eq 0 ]; then
+            reasons+=("PR has zero changed files")
+          fi
+
+          if grep -qi "Thanks for asking me to work on this\. I will get started" <<< "${PR_BODY:-}"; then
+            reasons+=("PR body still contains Copilot placeholder text")
+          fi
+
+          if [ "${#reasons[@]}" -gt 0 ]; then
+            for reason in "${reasons[@]}"; do
+              echo "Skipping auto-merge setup: ${reason}"
+            done
             echo "should_merge=false" >> "${GITHUB_OUTPUT}"
           else
             echo "PR passed auto-merge safety gate."
