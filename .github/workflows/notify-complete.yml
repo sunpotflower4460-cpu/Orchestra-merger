@@ -1,0 +1,163 @@
+name: Notify Orchestra Completion
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: orchestra-merger-notify-complete
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  notify-complete:
+    runs-on: ubuntu-latest
+    env:
+      ORCHESTRA_PAT: ${{ secrets.ORCHESTRA_PAT }}
+      FALLBACK_GITHUB_TOKEN: ${{ github.token }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+    steps:
+      - name: Evaluate completion and notify once
+        run: |
+          set -euo pipefail
+
+          if [ -n "${ORCHESTRA_PAT}" ]; then
+            export GH_TOKEN="${ORCHESTRA_PAT}"
+            token_source="ORCHESTRA_PAT"
+          else
+            export GH_TOKEN="${FALLBACK_GITHUB_TOKEN}"
+            token_source="GITHUB_TOKEN"
+          fi
+
+          echo "Token source: ${token_source}"
+          if [ -n "${ORCHESTRA_PAT}" ]; then
+            echo "ORCHESTRA_PAT present: yes"
+          else
+            echo "ORCHESTRA_PAT present: no"
+          fi
+
+          if [ -n "${NTFY_TOPIC}" ]; then
+            echo "NTFY_TOPIC present: yes"
+          else
+            echo "NTFY_TOPIC present: no"
+          fi
+
+          queued_json="$(gh api --method GET \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100" \
+            --jq '.[]' | jq -s '.')"
+          queued_count="$(jq '[.[] | select(.pull_request == null)] | length' <<< "${queued_json}")"
+
+          in_progress_json="$(gh api --method GET \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" \
+            --jq '.[]' | jq -s '.')"
+          in_progress_count="$(jq '[.[] | select(.pull_request == null)] | length' <<< "${in_progress_json}")"
+
+          pulls_json="$(gh api --method GET \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+            --jq '.[]' | jq -s '.')"
+          copilot_pr_count="$(jq '[.[] | select(.user.login == "Copilot" or .user.login == "copilot-swe-agent[bot]")] | length' <<< "${pulls_json}")"
+
+          notified_raw="false"
+          notified_state="false"
+          variable_exists="false"
+
+          set +e
+          variable_response="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/variables/ORCHESTRA_NOTIFIED" 2>&1)"
+          variable_status=$?
+          set -e
+
+          if [ "${variable_status}" -eq 0 ]; then
+            variable_exists="true"
+            notified_raw="$(jq -r '.value // "false"' <<< "${variable_response}")"
+          elif grep -qiE '(^|[^0-9])404([^0-9]|$)|not found' <<< "${variable_response}"; then
+            echo "ORCHESTRA_NOTIFIED variable: missing"
+          else
+            echo "::warning::Unable to read ORCHESTRA_NOTIFIED variable. ${variable_response}"
+          fi
+
+          if [[ "${notified_raw}" =~ ^[Tt][Rr][Uu][Ee]$ ]]; then
+            notified_state="true"
+          fi
+
+          echo "queued issue count: ${queued_count}"
+          echo "in-progress issue count: ${in_progress_count}"
+          echo "Copilot open PR count: ${copilot_pr_count}"
+          echo "ORCHESTRA_NOTIFIED state: ${notified_state}"
+
+          set_notified_state() {
+            target_value="$1"
+
+            if [ "${variable_exists}" = "true" ]; then
+              set +e
+              gh api --method PATCH \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/actions/variables/ORCHESTRA_NOTIFIED" \
+                -f "name=ORCHESTRA_NOTIFIED" \
+                -f "value=${target_value}" >/dev/null 2>&1
+              update_status=$?
+              set -e
+            else
+              set +e
+              gh api --method POST \
+                -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/actions/variables" \
+                -f "name=ORCHESTRA_NOTIFIED" \
+                -f "value=${target_value}" >/dev/null 2>&1
+              update_status=$?
+              set -e
+            fi
+
+            if [ "${update_status}" -eq 0 ]; then
+              variable_exists="true"
+              notified_state="${target_value}"
+              echo "ORCHESTRA_NOTIFIED updated to ${target_value}."
+              return 0
+            fi
+
+            echo "::warning::Failed to set ORCHESTRA_NOTIFIED=${target_value}. Ensure token can manage Actions variables, or create it manually."
+            return 1
+          }
+
+          if [ "${queued_count}" -eq 0 ] && [ "${in_progress_count}" -eq 0 ] && [ "${copilot_pr_count}" -eq 0 ]; then
+            if [ "${notified_state}" = "true" ]; then
+              echo "Decision: already notified"
+              exit 0
+            fi
+
+            if [ -z "${NTFY_TOPIC}" ]; then
+              echo "Decision: notification skipped due to missing configuration"
+              echo "::warning::NTFY_TOPIC is missing. Configure it to enable completion notifications."
+              exit 0
+            fi
+
+            notify_code="$(curl --silent --output /tmp/orchestra-ntfy-response.txt --write-out '%{http_code}' \
+              --data "🎉 Orchestra-merger: all issues processed" \
+              "https://ntfy.sh/${NTFY_TOPIC}" || true)"
+
+            if [[ "${notify_code}" =~ ^2[0-9][0-9]$ ]]; then
+              echo "Decision: notification sent"
+              set_notified_state "true" || true
+            else
+              echo "Decision: notification skipped due to missing configuration"
+              echo "::warning::Failed to send ntfy notification (HTTP ${notify_code:-unknown})."
+            fi
+            exit 0
+          fi
+
+          echo "Decision: work remains"
+          set_notified_state "false" || true
