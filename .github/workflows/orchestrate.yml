@@ -49,8 +49,10 @@ jobs:
           set -euo pipefail
 
           issues_json="$(gh api --method GET \
+            --paginate \
             -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100")"
+            "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100" \
+            --jq '.[]' | jq -s '.')"
 
           queued_count="$(jq '[.[] | select(.pull_request | not)] | length' <<<"${issues_json}")"
           echo "Queued issue count: ${queued_count}"
