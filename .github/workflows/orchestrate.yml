@@ -1,0 +1,142 @@
+name: Orchestrate Next Copilot Issue
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+concurrency:
+  group: orchestra-merger-orchestrate
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  orchestrate:
+    name: Pick queued issue and assign Copilot
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
+      COPILOT_AGENT_LOGIN: copilot-swe-agent[bot]
+      COPILOT_TARGET_REPO: sunpotflower4460-cpu/Orchestra-merger
+      COPILOT_BASE_BRANCH: main
+
+    steps:
+      - name: Verify ORCHESTRA_PAT is set
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::ORCHESTRA_PAT is not set. Cannot orchestrate queued issues."
+            exit 1
+          fi
+          echo "ORCHESTRA_PAT is set."
+
+      - name: Show trigger reason
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Trigger reason: manual dispatch"
+          else
+            echo "Trigger reason: PR merged"
+            echo "Merged PR: #${{ github.event.pull_request.number }}"
+          fi
+
+      - name: Find next queued issue
+        id: pick
+        run: |
+          set -euo pipefail
+
+          issues_json="$(gh api --method GET \
+            --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100" \
+            --jq '.[]' | jq -s '.')"
+
+          queued_count="$(jq '[.[] | select(.pull_request | not)] | length' <<<"${issues_json}")"
+          echo "Queued issue count: ${queued_count}"
+
+          if [ "${queued_count}" -eq 0 ]; then
+            echo "No queued issues. Nothing to do."
+            echo "has_issue=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          selected="$(jq '[.[] | select(.pull_request | not)] | sort_by(.number) | .[0]' <<<"${issues_json}")"
+          issue_number="$(jq -r '.number' <<<"${selected}")"
+          issue_title="$(jq -r '.title' <<<"${selected}")"
+          issue_url="$(jq -r '.html_url' <<<"${selected}")"
+
+          echo "Selected issue: #${issue_number} ${issue_title}"
+          echo "Issue URL: ${issue_url}"
+
+          {
+            echo "has_issue=true"
+            echo "queued_count=${queued_count}"
+            echo "issue_number=${issue_number}"
+            echo "issue_url=${issue_url}"
+            echo "issue_title<<EOF"
+            echo "${issue_title}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Add in-progress label
+        if: steps.pick.outputs.has_issue == 'true'
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.pick.outputs.issue_number }}"
+          issue_title="${{ steps.pick.outputs.issue_title }}"
+
+          echo "Adding label 'in-progress' to issue #${issue_number}..."
+          if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --add-label "in-progress"; then
+            echo "Successfully added 'in-progress' label to #${issue_number} (${issue_title})."
+          else
+            echo "::error::Failed to add 'in-progress' label to #${issue_number} (${issue_title}). Stopping before Copilot assignment."
+            exit 1
+          fi
+
+      - name: Remove queued label
+        if: steps.pick.outputs.has_issue == 'true'
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.pick.outputs.issue_number }}"
+          issue_title="${{ steps.pick.outputs.issue_title }}"
+
+          echo "Removing label 'queued' from issue #${issue_number}..."
+          if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "queued"; then
+            echo "Successfully removed 'queued' label from #${issue_number} (${issue_title})."
+          else
+            echo "::warning::Failed to remove 'queued' label from #${issue_number} (${issue_title}). Continuing to Copilot assignment."
+          fi
+
+      - name: Assign issue to Copilot coding agent
+        if: steps.pick.outputs.has_issue == 'true'
+        env:
+          ISSUE_NUMBER: ${{ steps.pick.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.pick.outputs.issue_title }}
+        run: |
+          set -euo pipefail
+
+          echo "Assigning issue #${ISSUE_NUMBER} (${ISSUE_TITLE}) to ${COPILOT_AGENT_LOGIN}..."
+
+          set +e
+          response="$(gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/assignees" \
+            -f "assignees[]=${COPILOT_AGENT_LOGIN}" \
+            -f "agent_assignment[target_repo]=${COPILOT_TARGET_REPO}" \
+            -f "agent_assignment[base_branch]=${COPILOT_BASE_BRANCH}" \
+            -f "agent_assignment[custom_instructions]=" \
+            -f "agent_assignment[custom_agent]=" \
+            -f "agent_assignment[model]=" 2>&1)"
+          status=$?
+          set -e
+
+          if [ "${status}" -eq 0 ]; then
+            echo "Copilot assignment succeeded for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+          else
+            echo "::error::Copilot assignment failed for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+            echo "::error::GitHub API response body: ${response}"
+            exit "${status}"
+          fi
