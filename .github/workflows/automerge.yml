@@ -1,0 +1,62 @@
+name: Copilot Auto Merge
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    name: Enable auto-merge for Copilot PR
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'copilot-swe-agent[bot]'
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
+
+    steps:
+      - name: Verify ORCHESTRA_PAT is set
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::ORCHESTRA_PAT is not set. Cannot proceed with auto-merge."
+            exit 1
+          fi
+          echo "ORCHESTRA_PAT is set."
+
+      - name: Show PR info
+        run: |
+          echo "PR number : ${{ github.event.pull_request.number }}"
+          echo "PR author : ${{ github.event.pull_request.user.login }}"
+          echo "PR title  : ${{ github.event.pull_request.title }}"
+          echo "PR draft  : ${{ github.event.pull_request.draft }}"
+
+      - name: Convert draft PR to ready for review
+        if: github.event.pull_request.draft == true
+        run: |
+          echo "PR is a draft. Attempting to mark as ready for review..."
+          if gh pr ready ${{ github.event.pull_request.number }} \
+              --repo "${{ github.repository }}"; then
+            echo "Successfully marked PR as ready for review."
+          else
+            echo "::warning::Failed to mark PR as ready for review. Proceeding anyway."
+          fi
+
+      - name: Enable auto-merge (squash)
+        run: |
+          echo "Enabling auto-merge (squash) for PR #${{ github.event.pull_request.number }}..."
+          MERGE_OUTPUT=$(gh pr merge ${{ github.event.pull_request.number }} \
+            --repo "${{ github.repository }}" \
+            --auto \
+            --squash 2>&1)
+          EXIT_CODE=$?
+          if [ ${EXIT_CODE} -eq 0 ]; then
+            echo "Auto-merge enabled successfully."
+          elif echo "${MERGE_OUTPUT}" | grep -qi "already"; then
+            echo "Auto-merge was already enabled for this PR."
+          else
+            echo "::error::Failed to enable auto-merge. Output: ${MERGE_OUTPUT}"
+            exit ${EXIT_CODE}
+          fi
