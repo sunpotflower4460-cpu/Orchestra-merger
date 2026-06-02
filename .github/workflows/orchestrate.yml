@@ -51,6 +51,7 @@ jobs:
           PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          # Intentionally omit `-e` so warnings do not block queue advancement.
           set -uo pipefail
 
           echo "Merged PR number: #${MERGED_PR_NUMBER}"
@@ -60,15 +61,15 @@ jobs:
           repo_slug_lc="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           candidate_numbers=()
 
-          body_matches="$(printf '%s\n' "${PR_BODY:-}" | grep -Eio '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]:]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)' || true)"
+          body_matches="$(printf '%s\n' "${PR_BODY:-}" | grep -Eio '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)([[:space:]]+|[[:space:]]*:[[:space:]]*|)([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)' || true)"
           if [ -n "${body_matches}" ]; then
             echo "Found potential linked issues in PR body:"
             echo "${body_matches}"
             while IFS= read -r match; do
               [ -n "${match}" ] || continue
-              if [[ "${match}" =~ [[:space:]:]+([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)$ ]]; then
-                linked_repo="${BASH_REMATCH[1]}"
-                linked_issue="${BASH_REMATCH[2]}"
+              if [[ "${match}" =~ ([[:space:]]+|[[:space:]]*:[[:space:]]*|)([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)$ ]]; then
+                linked_repo="${BASH_REMATCH[2]}"
+                linked_issue="${BASH_REMATCH[3]}"
                 linked_repo_lc="$(echo "${linked_repo}" | tr '[:upper:]' '[:lower:]')"
                 if [ -n "${linked_repo}" ] && [ "${linked_repo_lc}" != "${repo_slug_lc}" ]; then
                   echo "::warning::Skipping cross-repo linked issue reference: ${linked_repo}#${linked_issue}"
@@ -89,10 +90,12 @@ jobs:
           if [ "${#candidate_numbers[@]}" -eq 0 ]; then
             echo "No PR body or branch issue match found. Checking open in-progress issues as fallback."
             in_progress_json="$(gh api --method GET \
+              --paginate \
               -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" 2>/dev/null || true)"
+              "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" \
+              --jq '.[]' | jq -s '.' 2>/dev/null || true)"
             if [ -n "${in_progress_json}" ]; then
-              mapfile -t in_progress_numbers < <(jq -r '.[] | select(.pull_request | not) | .number' <<< "${in_progress_json}")
+              mapfile -t in_progress_numbers < <(jq -r '.[] | select(.pull_request == null) | .number' <<< "${in_progress_json}")
               if [ "${#in_progress_numbers[@]}" -eq 1 ]; then
                 candidate_numbers+=("${in_progress_numbers[0]}")
                 echo "Fallback selected the only open in-progress issue: #${in_progress_numbers[0]}"
@@ -112,7 +115,7 @@ jobs:
             exit 0
           fi
 
-          mapfile -t unique_candidates < <(printf '%s\n' "${candidate_numbers[@]}" | awk 'NF' | sort -n | uniq)
+          mapfile -t unique_candidates < <(printf '%s\n' "${candidate_numbers[@]}" | sed '/^$/d' | sort -n | uniq)
           echo "Candidate linked issue numbers: ${unique_candidates[*]}"
 
           final_numbers=()
@@ -157,7 +160,7 @@ jobs:
               echo "::warning::Failed to remove 'in-progress' from issue #${issue_number}."
             fi
 
-            if gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" --comment "Closing as completed because merged PR #${MERGED_PR_NUMBER} implemented this issue." >/dev/null 2>&1; then
+            if gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" --comment "Closing because this issue is linked to merged PR #${MERGED_PR_NUMBER}." >/dev/null 2>&1; then
               issue_closed="true"
             else
               echo "::warning::Failed to close linked issue #${issue_number}."
