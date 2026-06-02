@@ -422,6 +422,9 @@
 
     isPolling = true;
     pollingTimerId = window.setInterval(() => {
+      if (isRefreshingProgress) {
+        return;
+      }
       refreshProgress().catch((error) => {
         appendLog(`進捗更新で予期しないエラーが発生しました: ${getErrorMessage(error)}`, 'error');
       });
@@ -451,53 +454,61 @@
 
     isRefreshingProgress = true;
     let authFailureDetected = false;
+    let queuedCount = queuedIssues.length;
+    let inProgressCount = 0;
+    let openPrCount = 0;
+    let recentMergeCount = 0;
 
     try {
       try {
         const issues = await fetchQueuedIssues();
         queuedIssues = issues;
+        queuedCount = issues.length;
         renderQueuedIssues(issues);
       } catch (error) {
         appendLog(`queued Issue の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
-        authFailureDetected = authFailureDetected || isAuthFailure(error);
+        authFailureDetected ||= isAuthFailure(error);
       }
 
       if (!authFailureDetected) {
         try {
           const inProgressIssues = await fetchInProgressIssues();
+          inProgressCount = inProgressIssues.length;
           renderInProgressIssues(inProgressIssues);
         } catch (error) {
           appendLog(`in-progress Issue の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
-          authFailureDetected = authFailureDetected || isAuthFailure(error);
+          authFailureDetected ||= isAuthFailure(error);
         }
       }
 
       if (!authFailureDetected) {
         try {
           const openPullRequests = await fetchOpenPullRequests();
+          openPrCount = openPullRequests.length;
           renderOpenPullRequests(openPullRequests);
         } catch (error) {
           appendLog(`オープン PR の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
-          authFailureDetected = authFailureDetected || isAuthFailure(error);
+          authFailureDetected ||= isAuthFailure(error);
         }
       }
 
       if (!authFailureDetected) {
         try {
           const recentMergedPullRequests = await fetchRecentMergedPullRequests();
+          recentMergeCount = recentMergedPullRequests.length;
           renderRecentMerges(recentMergedPullRequests);
           const now = new Date();
           lastProgressSnapshot = {
-            queuedCount: queuedIssues.length,
-            inProgressCount: document.querySelectorAll('#in-progress-list .queue-item').length,
-            openPrCount: document.querySelectorAll('#open-pr-list .queue-item').length,
-            recentMergeCount: recentMergedPullRequests.length,
+            queuedCount,
+            inProgressCount,
+            openPrCount,
+            recentMergeCount,
             updatedAt: now.toISOString(),
           };
           setProgressLastUpdated(`最終更新: ${now.toLocaleTimeString('ja-JP', { hour12: false })}`);
         } catch (error) {
           appendLog(`最近のマージ情報の取得に失敗しました: ${getErrorMessage(error)}`, 'error');
-          authFailureDetected = authFailureDetected || isAuthFailure(error);
+          authFailureDetected ||= isAuthFailure(error);
         }
       }
 
