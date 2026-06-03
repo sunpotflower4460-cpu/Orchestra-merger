@@ -65,8 +65,8 @@ jobs:
             conclusion="success"
             run_id="manual"
           fi
-          echo "workflow_run_id : ${run_id}"
-          echo "conclusion      : ${conclusion}"
+          echo "workflow_run_id    : ${run_id}"
+          echo "workflow_conclusion: ${conclusion}"
           echo "conclusion=${conclusion}" >> "${GITHUB_OUTPUT}"
           echo "workflow_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
           if [ "${conclusion}" != "success" ]; then
@@ -188,12 +188,15 @@ jobs:
           skip_reason=""
 
           # Must be a recognised Copilot identity
-          if [ "${PR_AUTHOR}" != "Copilot" ] && \
-             [ "${PR_AUTHOR}" != "copilot-swe-agent" ] && \
-             [ "${PR_AUTHOR}" != "copilot-swe-agent[bot]" ]; then
-            skip=true
-            skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
-          fi
+          case "${PR_AUTHOR}" in
+            Copilot|copilot-swe-agent|"copilot-swe-agent[bot]")
+              : # valid Copilot identity — continue
+              ;;
+            *)
+              skip=true
+              skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
+              ;;
+          esac
 
           # Must target main
           if [ "${PR_BASE}" != "main" ]; then
@@ -202,7 +205,7 @@ jobs:
           fi
 
           # Must be open (not closed or merged)
-          pr_state_upper="${PR_STATE^^}"
+          pr_state_upper=$(echo "${PR_STATE}" | tr '[:lower:]' '[:upper:]')
           if [ "${pr_state_upper}" != "OPEN" ]; then
             skip=true
             skip_reason="PR is not open (state=${PR_STATE})"
@@ -338,6 +341,6 @@ jobs:
             echo "Decision: squash merge requested (already enabled)"
             echo "Auto-merge was already enabled for PR #${PR_NUMBER}."
           else
-            echo "::error::Failed to enable auto-merge for PR #${PR_NUMBER}."
+            echo "::error::Failed to enable auto-merge for PR #${PR_NUMBER}: ${MERGE_OUTPUT}"
             exit "${EXIT_CODE}"
           fi
