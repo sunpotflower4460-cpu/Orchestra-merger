@@ -24,6 +24,11 @@ const labels = [
     color: 'd29922',
     description: 'Currently assigned to Copilot coding agent',
   },
+  {
+    name: 'failed-assignment',
+    color: 'b60205',
+    description: 'Copilot assignment failed; issue is queued for retry',
+  },
 ];
 
 function log(message = '') {

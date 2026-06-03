@@ -27,7 +27,7 @@ Orchestra-merger は、GitHub Issues をキューとして扱い、GitHub Copilo
 
 Issue 0 の手動設定が完了している前提で進めます。
 
-- `queued` / `in-progress` ラベルが存在していること
+- `queued` / `in-progress` / `failed-assignment` ラベルが存在していること
 - GitHub Actions Secrets に `ORCHESTRA_PAT` / `NTFY_TOPIC` が登録されていること
 - GitHub Pages が `main` ブランチの `/docs` から配信されること
 - Copilot coding agent がこのリポジトリで利用可能になっていること

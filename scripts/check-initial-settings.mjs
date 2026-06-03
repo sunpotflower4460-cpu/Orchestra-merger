@@ -171,6 +171,7 @@ async function main() {
 
   await checkLabel('queued');
   await checkLabel('in-progress');
+  await checkLabel('failed-assignment');
   await checkPages();
   await checkBranchProtection();
   await checkSecret('ORCHESTRA_PAT');
