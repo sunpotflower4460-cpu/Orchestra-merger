@@ -1,0 +1,170 @@
+name: Launch Ready Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_numbers:
+        description: 'Issue numbers to inspect/launch (comma or space separated, e.g. "12, 34 56")'
+        required: true
+        type: string
+      launch:
+        description: "Launch switch: true to convert ready-for-launch to queued"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  launch:
+    name: Preview and launch selected issues
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
+
+    steps:
+      - name: Verify ORCHESTRA_PAT is set
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::ORCHESTRA_PAT is not set. Cannot launch issues."
+            exit 1
+          fi
+          echo "ORCHESTRA_PAT is set."
+
+      - name: Parse selected issue numbers
+        id: parse
+        env:
+          RAW_INPUT: ${{ inputs.issue_numbers }}
+        run: |
+          set -euo pipefail
+
+          normalized="$(printf '%s' "${RAW_INPUT}" | tr ',;\n\r\t' ' ')"
+          valid_numbers=()
+
+          for token in ${normalized}; do
+            if [[ "${token}" =~ ^[0-9]+$ ]] && [ "${token}" -gt 0 ]; then
+              valid_numbers+=("${token}")
+            else
+              echo "::warning::Skipping invalid issue token: ${token}"
+            fi
+          done
+
+          if [ "${#valid_numbers[@]}" -eq 0 ]; then
+            echo "::error::No valid issue numbers were provided."
+            exit 1
+          fi
+
+          mapfile -t unique_numbers < <(printf '%s\n' "${valid_numbers[@]}" | sort -nu)
+          requested_csv="$(IFS=,; echo "${unique_numbers[*]}")"
+          requested_spaced="$(IFS=' '; echo "${unique_numbers[*]}")"
+
+          echo "Requested issue numbers: ${requested_spaced}"
+          echo "requested_csv=${requested_csv}" >> "${GITHUB_OUTPUT}"
+          echo "requested_spaced=${requested_spaced}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate ready-for-launch issues
+        id: validate
+        env:
+          REQUESTED_SPACED: ${{ steps.parse.outputs.requested_spaced }}
+        run: |
+          set -euo pipefail
+
+          eligible_numbers=()
+          skipped_numbers=()
+
+          for issue_number in ${REQUESTED_SPACED}; do
+            issue_json="$(gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/issues/${issue_number}" 2>/dev/null || true)"
+
+            if [ -z "${issue_json}" ]; then
+              echo "::warning::Issue #${issue_number}: could not be loaded. Skipping."
+              skipped_numbers+=("${issue_number}")
+              continue
+            fi
+
+            if jq -e '.pull_request != null' >/dev/null 2>&1 <<< "${issue_json}"; then
+              echo "::warning::Issue #${issue_number}: is a pull request. Skipping."
+              skipped_numbers+=("${issue_number}")
+              continue
+            fi
+
+            issue_state="$(jq -r '.state' <<< "${issue_json}")"
+            if [ "${issue_state}" != "open" ]; then
+              echo "::warning::Issue #${issue_number}: state=${issue_state}. Skipping."
+              skipped_numbers+=("${issue_number}")
+              continue
+            fi
+
+            if jq -e '.labels | any(.name == "ready-for-launch")' >/dev/null 2>&1 <<< "${issue_json}"; then
+              eligible_numbers+=("${issue_number}")
+              echo "Eligible for launch: #${issue_number}"
+            else
+              echo "::warning::Issue #${issue_number}: missing ready-for-launch label. Skipping."
+              skipped_numbers+=("${issue_number}")
+            fi
+          done
+
+          if [ "${#eligible_numbers[@]}" -eq 0 ]; then
+            echo "::error::No selected issues are launchable (ready-for-launch + open issue)."
+            exit 1
+          fi
+
+          eligible_csv="$(IFS=,; echo "${eligible_numbers[*]}")"
+          eligible_spaced="$(IFS=' '; echo "${eligible_numbers[*]}")"
+          echo "Eligible issues: ${eligible_spaced}"
+          echo "eligible_csv=${eligible_csv}" >> "${GITHUB_OUTPUT}"
+          echo "eligible_spaced=${eligible_spaced}" >> "${GITHUB_OUTPUT}"
+
+          if [ "${#skipped_numbers[@]}" -gt 0 ]; then
+            skipped_spaced="$(IFS=' '; echo "${skipped_numbers[*]}")"
+            echo "Skipped issues: ${skipped_spaced}"
+            echo "skipped_spaced=${skipped_spaced}" >> "${GITHUB_OUTPUT}"
+          fi
+
+          {
+            echo "### Launch preview"
+            echo "- requested: ${REQUESTED_SPACED}"
+            echo "- eligible (`ready-for-launch`): ${eligible_spaced}"
+            if [ "${#skipped_numbers[@]}" -gt 0 ]; then
+              echo "- skipped: ${skipped_spaced}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Launch selected issues
+        if: inputs.launch == true
+        env:
+          ELIGIBLE_SPACED: ${{ steps.validate.outputs.eligible_spaced }}
+        run: |
+          set -euo pipefail
+
+          launched_numbers=()
+          for issue_number in ${ELIGIBLE_SPACED}; do
+            echo "Launching issue #${issue_number}: ready-for-launch -> queued"
+            gh issue edit "${issue_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --add-label "queued" \
+              --remove-label "ready-for-launch" >/dev/null
+            launched_numbers+=("${issue_number}")
+          done
+
+          launched_spaced="$(IFS=' '; echo "${launched_numbers[*]}")"
+          echo "Launched issue numbers: ${launched_spaced}"
+
+          {
+            echo "### Launch result"
+            echo "- launched issue numbers: ${launched_spaced}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Preview-only notice
+        if: inputs.launch != true
+        run: |
+          echo "Launch switch is OFF. No labels were changed."
+          {
+            echo "### Launch result"
+            echo "- launch switch: OFF (preview only)"
+            echo "- no label changes were made"
+          } >> "${GITHUB_STEP_SUMMARY}"
