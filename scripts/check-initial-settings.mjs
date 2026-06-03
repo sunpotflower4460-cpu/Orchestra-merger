@@ -169,6 +169,9 @@ async function main() {
     }
   }
 
+  await checkLabel('draft');
+  await checkLabel('needs-polish');
+  await checkLabel('ready-for-launch');
   await checkLabel('queued');
   await checkLabel('in-progress');
   await checkLabel('failed-assignment');

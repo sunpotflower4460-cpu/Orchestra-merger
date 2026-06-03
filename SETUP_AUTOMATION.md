@@ -67,12 +67,17 @@ npm run setup:initial
 
 このスクリプトが扱う内容:
 
-- `queued` / `in-progress` ラベルの作成または更新
+- `draft` / `needs-polish` / `ready-for-launch` / `queued` / `in-progress` / `failed-assignment` ラベルの作成または更新
 - `Allow auto-merge` の有効化
 - GitHub Pages の `main` / `/docs` 設定の試行
 - `NTFY_TOPIC` の生成案内
 - GitHub Secrets 登録コマンドの案内
 - main ブランチ保護の診断と手動境界の案内
+
+Launch Gate 運用ルール:
+
+- `draft` / `needs-polish` / `ready-for-launch` は準備状態（非実行）
+- **`queued` のみ実行可能状態**
 
 ## check の実行方法
 
@@ -157,7 +162,7 @@ API で有効化できない場合:
 
 以下が揃ったら Issue 1 に進めます。
 
-- `queued` / `in-progress` ラベルが存在する
+- `draft` / `needs-polish` / `ready-for-launch` / `queued` / `in-progress` / `failed-assignment` ラベルが存在する
 - `Allow auto-merge` が有効、または手動でオンにする段取りが明確
 - `ORCHESTRA_PAT` / `NTFY_TOPIC` の Secrets 登録手順が明確
 - Pages 設定が完了している、または Issue 1 後に再実行する方針が明確

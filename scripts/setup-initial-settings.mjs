@@ -15,9 +15,24 @@ const docsExists = existsSync(path.join(process.cwd(), 'docs'));
 
 const labels = [
   {
+    name: 'draft',
+    color: '6e7781',
+    description: 'Initial issue draft; not executable',
+  },
+  {
+    name: 'needs-polish',
+    color: 'fbca04',
+    description: 'Needs clarification before launch review',
+  },
+  {
+    name: 'ready-for-launch',
+    color: '0e8a16',
+    description: 'Approved for launch; waiting to be queued',
+  },
+  {
     name: 'queued',
     color: '1f6feb',
-    description: 'Ready for Copilot orchestration',
+    description: 'Executable by Copilot orchestration',
   },
   {
     name: 'in-progress',
