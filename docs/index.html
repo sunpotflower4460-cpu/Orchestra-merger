@@ -29,11 +29,25 @@
         <h2>PAT</h2>
         <label for="pat-input">GitHub Personal Access Token</label>
         <input id="pat-input" type="password" autocomplete="off" placeholder="ghp_..." />
+        <fieldset class="storage-mode-fieldset">
+          <legend>PAT の保存方法</legend>
+          <label class="option-row" for="pat-storage-local">
+            <input id="pat-storage-local" type="radio" name="pat-storage-mode" value="local" checked />
+            この端末に保存する (`localStorage`)
+          </label>
+          <label class="option-row" for="pat-storage-session">
+            <input id="pat-storage-session" type="radio" name="pat-storage-mode" value="session" />
+            このタブだけで使う (`sessionStorage`)
+          </label>
+        </fieldset>
+        <p id="pat-storage-note" class="muted">
+          localStorage はブラウザを閉じても残ります。信頼できる個人端末のみで使ってください。
+        </p>
         <div class="button-row">
-          <button id="save-pat-button" type="button">保存</button>
-          <button id="clear-pat-button" type="button" class="secondary">クリア</button>
+          <button id="save-pat-button" type="button">PAT を保存</button>
+          <button id="clear-pat-button" type="button" class="danger">PAT を削除</button>
         </div>
-        <p class="muted">PAT は簡易運用のため localStorage に保存されます。信頼できる端末でのみ使用してください。</p>
+        <p class="muted">初回保存時に信頼できる端末か確認します。PAT の値は画面・ログ・通知に出しません。</p>
         <p id="auth-status" class="muted">未設定</p>
       </section>
 
@@ -74,7 +88,11 @@
       </section>
 
       <section class="card">
-        <h2>ログ / メッセージ</h2>
+        <div class="section-head">
+          <h2>ログ / メッセージ</h2>
+          <button id="update-app-button" type="button" class="secondary">最新に更新</button>
+        </div>
+        <p class="muted">古い PWA を避けたいときは「最新に更新」を押してから再読み込みしてください。</p>
         <pre id="app-log" aria-live="polite">アプリを初期化しています...</pre>
       </section>
     </main>

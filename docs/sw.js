@@ -1,5 +1,6 @@
-const CACHE_NAME = 'orchestra-merger-static-v1';
-const STATIC_ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json'];
+const CACHE_NAME = 'orchestra-merger-static-v2';
+const STATIC_ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CORE_APP_PATHS = new Set(['./', './index.html', './app.js', './sw.js'].map((path) => new URL(path, self.registration.scope).pathname));
 const GITHUB_API_ORIGIN = 'https://api.github.com';
 const networkErrorResponse = () =>
   new Response('Network request failed.', {
@@ -28,6 +29,54 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
+async function putInCache(request, response) {
+  if (!response || !response.ok) {
+    return response;
+  }
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(request, response.clone());
+  return response;
+}
+
+async function networkFirst(request) {
+  try {
+    const response = await fetch(request);
+    return await putInCache(request, response);
+  } catch {
+    const cachedResponse = await caches.match(request);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+    if (request.mode === 'navigate') {
+      const cachedIndex = await caches.match('./index.html');
+      if (cachedIndex) {
+        return cachedIndex;
+      }
+    }
+    return networkErrorResponse();
+  }
+}
+
+async function cacheFirst(request) {
+  const cachedResponse = await caches.match(request);
+  if (cachedResponse) {
+    return cachedResponse;
+  }
+
+  try {
+    const response = await fetch(request);
+    return await putInCache(request, response);
+  } catch {
+    return networkErrorResponse();
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') {
     return;
@@ -39,13 +88,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-
-      return fetch(event.request).catch(() => networkErrorResponse());
-    }),
-  );
+  const isCoreRequest = event.request.mode === 'navigate' || CORE_APP_PATHS.has(requestUrl.pathname);
+  event.respondWith(isCoreRequest ? networkFirst(event.request) : cacheFirst(event.request));
 });
