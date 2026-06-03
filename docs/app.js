@@ -664,6 +664,9 @@
   }
 
   async function addQueuedLabel(issue) {
+    // Defensive restore helper: used to re-add queued if it was unexpectedly
+    // removed before a rollback. Not called in the normal rollback path where
+    // queued is never removed prior to a successful assignment.
     const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
     await ghFetch(path, {
       method: 'POST',
@@ -733,7 +736,7 @@
       } catch (error) {
         const message = getErrorMessage(error);
         if (isAuthFailure(error)) {
-          appendLog(`開始処理を中断しました: 認証エラー (${message})`, 'error');
+          appendLog(`Assignment failed for issue #${targetIssue.number}: 認証エラー (${message}) — rolling back`, 'error');
         } else {
           appendLog(`Assignment failed for issue #${targetIssue.number}: ${message}`, 'error');
         }

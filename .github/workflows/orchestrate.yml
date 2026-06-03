@@ -286,5 +286,5 @@ jobs:
           if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "queued"; then
             echo "Removed queued from issue #${issue_number} (${issue_title})"
           else
-            echo "::warning::Failed to remove 'queued' label from #${issue_number} (${issue_title}). The issue may be re-picked on next run."
+            echo "::warning::Failed to remove 'queued' label from #${issue_number} (${issue_title}). The issue may be re-picked on next run. Remove the queued label manually to prevent re-picking."
           fi
