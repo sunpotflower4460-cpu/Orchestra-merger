@@ -46,6 +46,46 @@ Issue のライフサイクルは次を想定します。
 
 重要: **実行可能なのは`queued`のみ**です。
 
+## 2.2 Issue polish workflow (pre-launch)
+
+`draft` のまま実装に進めず、次の順で内容を磨いてから launch します。
+
+```txt
+rough issue created
+→ label: needs-polish
+→ polishing pass（AI または人）で title / body / scope / acceptance criteria を明確化
+→ label: ready-for-launch
+→ 人手で launch 承認
+→ label: queued
+```
+
+運用ルール:
+
+- `needs-polish` / `ready-for-launch` は **非実行状態**
+- `ready-for-launch` へ移しても自動実行されない
+- 人手承認が終わるまで `queued` にしない
+
+polish 後の Issue 本文テンプレート（最小要件）:
+
+```markdown
+## Purpose
+- この Issue で達成したい目的
+
+## Scope
+- この Issue で実装する範囲
+
+## Out of scope
+- 今回やらないこと（境界を明示）
+
+## Tasks
+- [ ] 実装タスク 1
+- [ ] 実装タスク 2
+
+## Acceptance criteria
+- [ ] 振る舞いが検証可能な受け入れ条件
+- [ ] 回帰しないことを確認できる条件
+```
+
 ## 3. Current architecture
 
 主な構成要素は以下です。
