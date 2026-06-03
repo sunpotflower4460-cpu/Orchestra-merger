@@ -59,6 +59,18 @@ label {
   font-weight: 600;
 }
 
+fieldset {
+  margin: 12px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
 input,
 button {
   font: inherit;
@@ -72,6 +84,20 @@ input {
   padding: 0 12px;
   background: #fff;
   color: var(--text);
+}
+
+.option-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 8px 0 0;
+  font-weight: 400;
+}
+
+.option-row input[type='radio'] {
+  width: auto;
+  min-height: auto;
+  margin: 2px 0 0;
 }
 
 button {
@@ -93,6 +119,16 @@ button.secondary {
   background: var(--secondary);
   border-color: var(--border);
   color: var(--text);
+}
+
+button.danger {
+  background: #fff1f1;
+  border-color: #efc4c4;
+  color: var(--status-error);
+}
+
+button.danger:hover {
+  background: #ffe4e4;
 }
 
 .button-row {

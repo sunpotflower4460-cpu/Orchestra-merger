@@ -3,6 +3,9 @@
   const REPO = 'Orchestra-merger';
   const API_BASE = 'https://api.github.com';
   const PAT_STORAGE_KEY = 'orchestra_merger_pat';
+  const PAT_STORAGE_MODE_KEY = 'orchestra_merger_pat_storage_mode';
+  const STORAGE_MODE_LOCAL = 'local';
+  const STORAGE_MODE_SESSION = 'session';
   // NOTE: GitHub 側の仕様変更で bot login 名が変わる可能性があるため、差し替えはこの定数で行う。
   const COPILOT_AGENT_LOGIN = 'copilot-swe-agent[bot]';
   const COPILOT_TARGET_REPO = `${OWNER}/${REPO}`;
@@ -19,8 +22,11 @@
   const appLog = document.getElementById('app-log');
   const patSection = document.getElementById('pat-section');
   const patInput = document.getElementById('pat-input');
+  const patStorageModeInputs = document.querySelectorAll('input[name="pat-storage-mode"]');
+  const patStorageNote = document.getElementById('pat-storage-note');
   const savePatButton = document.getElementById('save-pat-button');
   const clearPatButton = document.getElementById('clear-pat-button');
+  const updateAppButton = document.getElementById('update-app-button');
 
   let queuedIssues = [];
   let isStartingIssue = false;
@@ -28,6 +34,9 @@
   let isPolling = false;
   let isRefreshingProgress = false;
   let lastProgressSnapshot = null;
+  let serviceWorkerRegistration = null;
+  let isUpdatingApp = false;
+  let reloadAfterControllerChange = false;
 
   function setStatus(elementId, message, type = 'info') {
     const element = document.getElementById(elementId);
@@ -51,8 +60,53 @@
     appLog.textContent = appLog.textContent ? `${appLog.textContent}\n${line}` : line;
   }
 
+  function getSelectedStorageMode() {
+    const selectedInput = Array.from(patStorageModeInputs).find((input) => input.checked);
+    return selectedInput && selectedInput.value === STORAGE_MODE_SESSION ? STORAGE_MODE_SESSION : STORAGE_MODE_LOCAL;
+  }
+
+  function setSelectedStorageMode(mode) {
+    Array.from(patStorageModeInputs).forEach((input) => {
+      input.checked = input.value === mode;
+    });
+  }
+
+  function getPatStorageMode() {
+    if (sessionStorage.getItem(PAT_STORAGE_KEY)) {
+      return STORAGE_MODE_SESSION;
+    }
+    if (localStorage.getItem(PAT_STORAGE_KEY)) {
+      return STORAGE_MODE_LOCAL;
+    }
+    return localStorage.getItem(PAT_STORAGE_MODE_KEY) === STORAGE_MODE_SESSION ? STORAGE_MODE_SESSION : STORAGE_MODE_LOCAL;
+  }
+
+  function setPatStoragePreference(mode) {
+    localStorage.setItem(PAT_STORAGE_MODE_KEY, mode);
+  }
+
+  function updatePatStorageNote(mode, hasPat) {
+    if (!patStorageNote) {
+      return;
+    }
+
+    if (hasPat && mode === STORAGE_MODE_SESSION) {
+      patStorageNote.textContent = '現在の PAT は sessionStorage に保存されています。タブまたはブラウザのセッション終了で消えます。';
+      return;
+    }
+    if (hasPat) {
+      patStorageNote.textContent = '現在の PAT は localStorage に保存されています。信頼できる個人端末でのみ使ってください。';
+      return;
+    }
+    if (mode === STORAGE_MODE_SESSION) {
+      patStorageNote.textContent = 'sessionStorage はこのタブだけで有効です。共用端末や一時利用ではこちらを推奨します。';
+      return;
+    }
+    patStorageNote.textContent = 'localStorage はブラウザを閉じても残ります。信頼できる個人端末のみで使ってください。';
+  }
+
   function getPat() {
-    const token = localStorage.getItem(PAT_STORAGE_KEY);
+    const token = sessionStorage.getItem(PAT_STORAGE_KEY) || localStorage.getItem(PAT_STORAGE_KEY);
     if (!token) {
       return '';
     }
@@ -62,6 +116,9 @@
 
   function updateAuthUi() {
     const hasPat = Boolean(getPat());
+    const storageMode = getPatStorageMode();
+    setSelectedStorageMode(storageMode);
+    updatePatStorageNote(storageMode, hasPat);
 
     if (patInput) {
       patInput.hidden = hasPat;
@@ -74,12 +131,9 @@
       savePatButton.hidden = hasPat;
     }
 
-    if (clearPatButton) {
-      clearPatButton.textContent = hasPat ? 'PAT を削除' : '入力をクリア';
-    }
-
     if (patSection) {
       patSection.dataset.state = hasPat ? 'saved' : 'empty';
+      patSection.dataset.storageMode = storageMode;
     }
 
     if (!hasPat) {
@@ -88,9 +142,10 @@
     }
 
     updateStartButtonState();
+    updateUpdateButtonState();
   }
 
-  function savePat(token) {
+  function savePat(token, mode = getSelectedStorageMode()) {
     const normalized = String(token || '').trim();
     if (!normalized) {
       throw new Error('PAT を入力してください。');
@@ -99,17 +154,35 @@
       throw new Error('PAT に空白文字は使用できません。');
     }
 
-    localStorage.setItem(PAT_STORAGE_KEY, normalized);
+    // NOTE: PAT の値は絶対にログ・console・status text に出さないこと。
+    localStorage.removeItem(PAT_STORAGE_KEY);
+    sessionStorage.removeItem(PAT_STORAGE_KEY);
+    setPatStoragePreference(mode);
+    if (mode === STORAGE_MODE_SESSION) {
+      sessionStorage.setItem(PAT_STORAGE_KEY, normalized);
+    } else {
+      localStorage.setItem(PAT_STORAGE_KEY, normalized);
+    }
     updateAuthUi();
     return normalized;
   }
 
   function clearPat() {
+    // NOTE: PAT の値は絶対にログ・console・status text に出さないこと。
     localStorage.removeItem(PAT_STORAGE_KEY);
+    sessionStorage.removeItem(PAT_STORAGE_KEY);
     updateAuthUi();
     if (patInput) {
       patInput.focus();
     }
+  }
+
+  function confirmPatStorageChoice(mode) {
+    const message =
+      mode === STORAGE_MODE_SESSION
+        ? 'この PAT は sessionStorage に保存し、このタブ/セッションが閉じると消えます。信頼できる端末でのみ続行しますか？'
+        : 'この PAT は localStorage に保存され、ブラウザを閉じても残ります。信頼できる個人端末でのみ続行しますか？';
+    return window.confirm(message);
   }
 
   function buildGithubErrorMessage(status, payload, rateLimitRemaining) {
@@ -838,8 +911,14 @@
   async function handleSavePat() {
     try {
       const inputValue = patInput ? patInput.value : '';
-      savePat(inputValue);
-      appendLog('PAT を保存しました。認証を確認します。', 'info');
+      const storageMode = getSelectedStorageMode();
+      if (!getPat() && !confirmPatStorageChoice(storageMode)) {
+        setStatus('auth-status', 'PAT の保存をキャンセルしました。', 'warning');
+        appendLog('PAT の保存をキャンセルしました。', 'warning');
+        return;
+      }
+      savePat(inputValue, storageMode);
+      appendLog(`PAT を ${storageMode === STORAGE_MODE_SESSION ? 'sessionStorage' : 'localStorage'} に保存しました。認証を確認します。`, 'info');
       const isVerified = await verifyPatAndUpdateStatus();
       if (!isVerified) {
         clearPat();
@@ -864,7 +943,7 @@
       return;
     }
 
-    appendLog('保存済み PAT の認証状態を確認します。', 'info');
+    appendLog(`保存済み PAT (${getPatStorageMode() === STORAGE_MODE_SESSION ? 'sessionStorage' : 'localStorage'}) の認証状態を確認します。`, 'info');
     const isVerified = await verifyPatAndUpdateStatus();
     if (!isVerified) {
       clearPat();
@@ -878,6 +957,13 @@
   }
 
   function bindEvents() {
+    Array.from(patStorageModeInputs).forEach((input) => {
+      input.addEventListener('change', () => {
+        setPatStoragePreference(getSelectedStorageMode());
+        updatePatStorageNote(getSelectedStorageMode(), Boolean(getPat()));
+      });
+    });
+
     if (savePatButton) {
       savePatButton.addEventListener('click', () => {
         handleSavePat().catch((error) => {
@@ -919,7 +1005,114 @@
       });
     }
 
+    if (updateAppButton) {
+      updateAppButton.addEventListener('click', () => {
+        handleUpdateApp().catch((error) => {
+          appendLog(`更新処理に失敗しました: ${getErrorMessage(error)}`, 'error');
+        });
+      });
+    }
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
+
+  function updateUpdateButtonState() {
+    if (!updateAppButton) {
+      return;
+    }
+    updateAppButton.disabled = isUpdatingApp;
+    updateAppButton.textContent = isUpdatingApp ? '更新中...' : '最新に更新';
+  }
+
+  function waitForInstalledWorker(worker) {
+    if (!worker) {
+      return Promise.resolve(null);
+    }
+    if (worker.state === 'installed' || worker.state === 'activated') {
+      return Promise.resolve(worker.state);
+    }
+    return new Promise((resolve, reject) => {
+      const handleStateChange = () => {
+        if (worker.state === 'installed' || worker.state === 'activated') {
+          worker.removeEventListener('statechange', handleStateChange);
+          resolve(worker.state);
+        } else if (worker.state === 'redundant') {
+          worker.removeEventListener('statechange', handleStateChange);
+          reject(new Error('Service Worker の更新が破棄されました。'));
+        }
+      };
+      worker.addEventListener('statechange', handleStateChange);
+    });
+  }
+
+  function trackServiceWorkerRegistration(registration) {
+    if (!registration || registration.__orchestraTracked) {
+      return;
+    }
+    registration.__orchestraTracked = true;
+    registration.addEventListener('updatefound', () => {
+      const installingWorker = registration.installing;
+      if (!installingWorker) {
+        return;
+      }
+      appendLog('新しい PWA バージョンを確認しています。', 'info');
+      installingWorker.addEventListener('statechange', () => {
+        if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+          appendLog('新しい PWA バージョンがあります。「最新に更新」を押すと切り替わります。', 'warning');
+        }
+      });
+    });
+  }
+
+  async function ensureServiceWorkerRegistration() {
+    if (serviceWorkerRegistration) {
+      return serviceWorkerRegistration;
+    }
+    const existingRegistration =
+      (await navigator.serviceWorker.getRegistration('./sw.js')) || (await navigator.serviceWorker.getRegistration());
+    if (existingRegistration) {
+      serviceWorkerRegistration = existingRegistration;
+      trackServiceWorkerRegistration(existingRegistration);
+      return existingRegistration;
+    }
+    serviceWorkerRegistration = await navigator.serviceWorker.register('./sw.js');
+    trackServiceWorkerRegistration(serviceWorkerRegistration);
+    return serviceWorkerRegistration;
+  }
+
+  async function handleUpdateApp() {
+    isUpdatingApp = true;
+    updateUpdateButtonState();
+    appendLog('最新のアプリ更新を確認します。', 'info');
+
+    try {
+      if (!('serviceWorker' in navigator)) {
+        appendLog('Service Worker 未対応のため通常の再読み込みで更新します。', 'warning');
+        window.location.reload();
+        return;
+      }
+
+      const registration = await ensureServiceWorkerRegistration();
+      await registration.update();
+
+      if (registration.installing) {
+        appendLog('新しい Service Worker をダウンロードしています。', 'info');
+        await waitForInstalledWorker(registration.installing);
+      }
+
+      if (registration.waiting) {
+        appendLog('待機中の Service Worker を有効化します。', 'info');
+        reloadAfterControllerChange = true;
+        registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+        return;
+      }
+
+      appendLog('最新ファイルを取得するためページを再読み込みします。', 'info');
+      window.location.reload();
+    } finally {
+      isUpdatingApp = false;
+      updateUpdateButtonState();
+    }
   }
 
   function registerServiceWorker() {
@@ -927,10 +1120,21 @@
       return;
     }
 
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!reloadAfterControllerChange) {
+        return;
+      }
+      reloadAfterControllerChange = false;
+      appendLog('最新の Service Worker を適用しました。ページを再読み込みします。', 'success');
+      window.location.reload();
+    });
+
     window.addEventListener('load', () => {
       navigator.serviceWorker
         .register('./sw.js')
-        .then(() => {
+        .then((registration) => {
+          serviceWorkerRegistration = registration;
+          trackServiceWorkerRegistration(registration);
           appendLog('Service Worker の登録に成功しました。', 'success');
         })
         .catch(() => {
@@ -944,7 +1148,9 @@
     REPO,
     API_BASE,
     PAT_STORAGE_KEY,
+    PAT_STORAGE_MODE_KEY,
     getPat,
+    getPatStorageMode,
     savePat,
     clearPat,
     ghFetch,
@@ -960,6 +1166,7 @@
     getPollingIntervalMs,
     getPollingTimerId,
     getIsRefreshingProgress,
+    handleUpdateApp,
   };
 
   window.appState = {

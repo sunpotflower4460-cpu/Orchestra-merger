@@ -1,69 +1,172 @@
 # Orchestra-merger
 
-Orchestra-merger は、GitHub Issues をキューとして扱い、GitHub Copilot coding agent に 1 件ずつ順番に作業を割り当て、PR の自動マージ・次 Issue への連鎖・全件完了時の通知までを行う小さなオーケストレーターです。
+Orchestra-merger は、個人運用向けの小さな GitHub オーケストレーションアプリです。`queued` Issue を作業キューとして扱い、Copilot coding agent に 1 件ずつ渡し、PR の自動マージ・次 Issue への前進・全件完了時の通知までをまとめて補助します。
 
-> この README はプロジェクトの土台を整理するためのものです。PWA 画面、JavaScript ロジック、GitHub Actions workflow などの本体実装は今後の Issue で追加されます。
+## 1. Overview
 
-## このアプリがやること
+このリポジトリは次の流れを前提にしています。
 
-- `queued` ラベルの付いた GitHub Issue を処理対象として扱う
-- 先頭の Issue を `queued` → `in-progress` に進める
-- Copilot coding agent に順番に割り当てる
-- Copilot が作成した PR の CI が通ったら自動マージする
-- マージ後に次の `queued` Issue へ連鎖して進む
-- すべて完了したら ntfy で通知する
+- `queued` GitHub Issue を作業キューとして使う
+- Copilot coding agent に 1 件ずつ順番に渡す
+- チェック通過後に Copilot PR を auto-merge する
+- マージ後に次の Issue へ進める
+- すべて完了したら通知する
 
-## 全体の流れ
+## 2. What Orchestra-merger does
 
-1. 人が GitHub Issue を作成する
-2. 対象 Issue に `queued` ラベルを付ける
-3. GitHub Pages で配信される PWA から処理を開始する
-4. Copilot coding agent が PR を作成する
-5. CI 通過後に auto-merge する
-6. 次の `queued` Issue に連鎖して進む
-7. 全件完了時に ntfy で通知する
+通常の運用では、人が Issue を作成して `queued` ラベルを付け、PWA から「次の Issue を開始」を押します。するとアプリと GitHub Actions が連携し、以下を進めます。
 
-## 前提条件
+1. 先頭の `queued` Issue を確認する
+2. `in-progress` ラベルを付けて Copilot に割り当てる
+3. Copilot が PR を作成したら CI 完了を待つ
+4. 条件を満たした Copilot PR を auto-merge する
+5. マージ済み PR の関連 Issue を finalize する
+6. まだ `queued` が残っていれば次に進む
+7. すべて完了したら `ntfy` に通知する
 
-Issue 0 の手動設定が完了している前提で進めます。
+## 3. Current architecture
 
-- `queued` / `in-progress` / `failed-assignment` ラベルが存在していること
-- GitHub Actions Secrets に `ORCHESTRA_PAT` / `NTFY_TOPIC` が登録されていること
-- GitHub Pages が `main` ブランチの `/docs` から配信されること
-- Copilot coding agent がこのリポジトリで利用可能になっていること
+主な構成要素は以下です。
 
-Issue 0.5 の補助スクリプトと確認手順は [`SETUP_AUTOMATION.md`](./SETUP_AUTOMATION.md) を参照してください。
+- GitHub Pages PWA: `/docs`
+- 画面ロジック: `/docs/app.js`
+  - queued Issue 表示
+  - PAT 認証
+  - start アクション
+  - 進捗ポーリング
+  - PWA 更新操作
+- Service Worker: `/docs/sw.js`
+  - オフラインキャッシュ
+  - コアファイルの network-first 更新
+- GitHub Actions workflows:
+  - `.github/workflows/automerge.yml`
+  - `.github/workflows/orchestrate.yml`
+  - `.github/workflows/notify-complete.yml`
+  - `.github/workflows/check.yml`
+- セットアップ補助スクリプト: `/scripts`
+  - `setup-initial-settings.mjs`
+  - `check-initial-settings.mjs`
 
-## セットアップ概要
+## 4. Implemented features
 
-1. Issue 0 の手動設定を完了する
-2. 必要なら `npm run setup:dry-run` で初期設定内容を確認する
-3. 必要なら `npm run setup:initial` で補助スクリプトを実行する
-4. `npm run check:initial` で Issue 1 に進める状態か確認する
-5. GitHub Pages の配信元を `main` / `docs` に設定する
-6. スマホまたは信頼できる端末で PWA を開き、運用準備を行う
+現時点で実装済みの主な機能:
 
-## 今後の Issue で実装される予定の機能
+- PWA 画面
+- PAT 保存
+- queued Issue 取得
+- 開始アクション
+- 進捗ポーリング
+- Copilot PR auto-merge guard
+- minimal CI watchdog
+- orchestration workflow
+- linked issue finalization
+- notify-complete workflow
+- rollback / failed-assignment behavior
 
-- PWA 画面の実装
-- GitHub API を使ったキュー表示と開始操作
-- Copilot coding agent への順次割り当て処理
-- PR の auto-merge workflow
-- 次 Issue への連鎖 workflow
-- 完了時の ntfy 通知
-- 進捗確認と最低限の運用補助 UI
+## 5. Remaining / known limitations
 
-## 注意点
+現状の制限も明示しておきます。
 
-- PAT をブラウザの `localStorage` に保存する設計です
-- 自分用・信頼端末用の小さな管理アプリとして扱ってください
-- GitHub / Copilot 側の仕様変更に影響される可能性があります
-- 品質は最終的に CI とテストの整備状況に大きく依存します
+- PAT をブラウザ保存する場合は、信頼できる端末での運用が前提です
+- GitHub / Copilot の bot 名や識別方法が将来変わる可能性があります
+- 一部の初期セットアップは GitHub 側で手動設定が必要です
+- branch protection は手動で確認・設定する必要があります
+- `ntfy` のトピック購読はアプリ外で設定します
 
-## リポジトリの現状
+## 6. Initial setup
 
-この Issue の時点では、README / LICENSE / `.gitignore` / `docs/.nojekyll` などの基盤ファイルを整える段階です。アプリ本体はまだ未実装であり、後続 Issue の実装者が迷わず進められるようにプロジェクトの目的と前提を固定することを目的としています。
+まず、GitHub 側の前提を揃えます。
 
-## ライセンス
+1. `queued` / `in-progress` / `failed-assignment` ラベルを用意する
+2. GitHub Actions secrets に `ORCHESTRA_PAT` と `NTFY_TOPIC` を登録する
+3. GitHub Pages を `main` ブランチの `/docs` から配信する
+4. Copilot coding agent がこのリポジトリで利用可能なことを確認する
+5. 必要に応じて次の補助コマンドを使う
+   - `npm run setup:dry-run`
+   - `npm run setup:initial`
+   - `npm run check:initial`
+
+詳細は [`SETUP_AUTOMATION.md`](./SETUP_AUTOMATION.md) を参照してください。
+
+## 7. Normal operation
+
+通常の使い方は次のとおりです。
+
+1. 作業させたい Issue を作成し、`queued` ラベルを付ける
+2. GitHub Pages の PWA を開く
+3. PAT を入力する
+4. 保存方法を選ぶ
+   - persistent mode: `localStorage`
+   - session mode: `sessionStorage`
+5. 初回保存時の「信頼できる端末」確認に同意する
+6. 必要なら「最新に更新」で最新 PWA を読み直す
+7. 「次の Issue を開始」を押す
+8. 進捗欄で `in-progress` Issue / open PR / recent merge を確認する
+9. 全件完了後は `ntfy` 通知を確認する
+
+## 8. Manual follow-ups
+
+自動化の外で、人が確認したほうがよい項目:
+
+- Pages 配信設定が維持されているか
+- branch protection と required checks が意図どおりか
+- Copilot が対象リポジトリに割り当て可能か
+- `ntfy` の購読先が現在使っている端末で有効か
+- 必要がなくなった PAT を PWA から削除したか
+
+## 9. Troubleshooting
+
+### automerge が動かない
+
+- `.github/workflows/automerge.yml` が有効か確認する
+- PR が Copilot 作成 PR として判定されているか確認する
+- `check.yml` の `ci-check` など required checks が成功しているか確認する
+- branch protection が auto-merge を阻害していないか確認する
+
+### Copilot assignment が失敗する
+
+- PWA の認証状態を確認する
+- PAT 権限不足や期限切れを疑う
+- `failed-assignment` ラベルが付いていないか確認する
+- Copilot coding agent がこのリポジトリで利用可能か確認する
+
+### stale PWA / old app version が出る
+
+- 画面の「最新に更新」を押す
+- オンライン時は `index.html` / `app.js` / `sw.js` が network-first で取り直される
+- それでも古ければブラウザの PWA を再読み込みし、必要に応じて再インストールする
+
+### ntfy が通知しない
+
+- `NTFY_TOPIC` secret が正しいか確認する
+- 端末側で対象トピックを購読しているか確認する
+- `.github/workflows/notify-complete.yml` の実行結果を確認する
+
+### PAT / auth が失敗する
+
+- PAT の文字列に空白が入っていないか確認する
+- 権限が不足していないか確認する
+- 一時端末なら `sessionStorage` モードを使う
+- 不要な PAT は「PAT を削除」で消してから再設定する
+
+## 10. Security notes
+
+このアプリはブラウザから GitHub PAT を使うため、以下を守ってください。
+
+- trusted personal device でのみ使う
+- 一時端末では `sessionStorage` モードを優先する
+- 不要になったら PWA から PAT を削除する
+- PAT を GitHub Issue / PR / スクリーンショット / ログに貼らない
+
+推奨する最小権限:
+
+- `metadata`: read
+- `contents`: read/write
+- `issues`: read/write
+- `pull requests`: read/write
+- `actions`: read/write
+- `administration`: setup scripts や Pages / branch settings の変更が必要な場合のみ
+
+## License
 
 MIT License
