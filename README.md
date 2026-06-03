@@ -110,6 +110,8 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - セットアップ補助スクリプト: `/scripts`
   - `setup-initial-settings.mjs`
   - `check-initial-settings.mjs`
+  - `validate-target-repo.mjs`
+- ターゲットリポジトリレジストリ: `config/target-repos.yml`
 
 ## 4. Implemented features
 
@@ -126,8 +128,25 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - linked issue finalization
 - notify-complete workflow
 - rollback / failed-assignment behavior
+- target repository registry (`config/target-repos.yml`)
 
-## 5. Remaining / known limitations
+## 5. Target repository registry
+
+`config/target-repos.yml` は、将来の Phase 3 マルチリポジトリオーケストレーションに備えた許可リストです。現時点ではクロスリポジトリの実行は行われません。
+
+- 許可リストに存在し `enabled: true` のリポジトリのみ、将来の自動化でターゲットにできます。
+- リストにないリポジトリ、または `enabled: false` のリポジトリはすべて拒否されます。
+- フィールドの詳細は [`docs/TARGET_REPOS.md`](./docs/TARGET_REPOS.md) を参照してください。
+
+リポジトリが許可リストに含まれているかを確認するには:
+
+```bash
+npm run validate:target-repo -- --repo owner/repo
+# または
+TARGET_REPO=owner/repo node scripts/validate-target-repo.mjs
+```
+
+## 6. Remaining / known limitations
 
 現状の制限も明示しておきます。
 
@@ -137,7 +156,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - branch protection は手動で確認・設定する必要があります
 - `ntfy` のトピック購読はアプリ外で設定します
 
-## 6. Initial setup
+## 7. Initial setup
 
 まず、GitHub 側の前提を揃えます。
 
@@ -152,7 +171,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 
 詳細は [`SETUP_AUTOMATION.md`](./SETUP_AUTOMATION.md) を参照してください。
 
-## 7. Normal operation
+## 8. Normal operation
 
 通常の使い方は次のとおりです。
 
@@ -170,7 +189,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 10. 進捗欄で `in-progress` Issue / open PR / recent merge を確認する
 11. 全件完了後は `ntfy` 通知を確認する
 
-## 8. Manual follow-ups
+## 9. Manual follow-ups
 
 自動化の外で、人が確認したほうがよい項目:
 
@@ -180,7 +199,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - `ntfy` の購読先が現在使っている端末で有効か
 - 必要がなくなった PAT を PWA から削除したか
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### automerge が動かない
 
@@ -215,7 +234,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - 一時端末なら `sessionStorage` モードを使う
 - 不要な PAT は「PAT を削除」で消してから再設定する
 
-## 10. Security notes
+## 11. Security notes
 
 このアプリはブラウザから GitHub PAT を使うため、以下を守ってください。
 
