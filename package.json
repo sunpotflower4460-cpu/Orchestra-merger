@@ -5,6 +5,7 @@
   "scripts": {
     "setup:dry-run": "DRY_RUN=true node scripts/setup-initial-settings.mjs",
     "setup:initial": "node scripts/setup-initial-settings.mjs",
-    "check:initial": "node scripts/check-initial-settings.mjs"
+    "check:initial": "node scripts/check-initial-settings.mjs",
+    "validate:target-repo": "node scripts/validate-target-repo.mjs"
   }
 }

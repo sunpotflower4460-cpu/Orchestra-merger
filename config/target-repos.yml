@@ -1,0 +1,29 @@
+# Target Repository Registry
+#
+# This file is the allowlist for multi-repo orchestration (Phase 3).
+# Only repositories listed here with `enabled: true` may be targeted
+# by Orchestra-merger for cross-repo task coordination.
+#
+# Cross-repo execution is NOT active yet. This registry is the
+# foundation required before execution can be enabled safely.
+#
+# Field reference: see docs/TARGET_REPOS.md
+#
+# ---------------------------------------------------------------
+# IMPORTANT: Adding a repository here does NOT trigger any action.
+# Execution requires explicit launch approval AND the orchestration
+# code to be wired up in a future phase.
+# ---------------------------------------------------------------
+
+targets:
+  - repo: sunpotflower4460-cpu/Orchestra-merger
+    enabled: true
+    default_branch: main
+    mode: sequential
+    auto_merge: after_required_checks
+
+  - repo: sunpotflower4460-cpu/pipe
+    enabled: true
+    default_branch: main
+    mode: sequential
+    auto_merge: manual_review
