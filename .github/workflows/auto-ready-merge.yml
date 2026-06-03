@@ -1,0 +1,343 @@
+name: Auto-ready and auto-merge Copilot PRs
+
+# Triggered after the CI Check workflow completes so that Copilot draft PRs can
+# be promoted to ready-for-review and squash-merged automatically, removing the
+# remaining manual bottleneck in the single-repo self-driving loop.
+#
+# Safety conditions (ALL must be true to proceed):
+#   - workflow_run concluded success
+#   - PR author is Copilot / copilot-swe-agent / copilot-swe-agent[bot]
+#   - PR targets main
+#   - PR is not closed
+#   - PR has changed files > 0
+#   - PR title does not contain WIP
+#   - PR body does not contain known placeholder text
+#   - config/target-repos.yml entry for this repo has auto_merge: after_required_checks
+#
+# If any condition fails the workflow logs the reason and exits cleanly (fail closed).
+
+on:
+  workflow_run:
+    workflows: ["CI Check"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to process (manual testing only)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-ready-merge:
+    name: Auto-ready and auto-merge Copilot PR
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 0. Guard: secret must be present
+      # -----------------------------------------------------------------------
+      - name: Verify ORCHESTRA_PAT is set
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::ORCHESTRA_PAT is not set. Cannot proceed with auto-ready-merge."
+            exit 1
+          fi
+          echo "ORCHESTRA_PAT is set."
+
+      # -----------------------------------------------------------------------
+      # 1. Check that the triggering CI run actually succeeded
+      # -----------------------------------------------------------------------
+      - name: Check CI conclusion
+        id: ci
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            conclusion="${{ github.event.workflow_run.conclusion }}"
+            run_id="${{ github.event.workflow_run.id }}"
+          else
+            # workflow_dispatch: treat as success so the rest of the logic runs
+            conclusion="success"
+            run_id="manual"
+          fi
+          echo "workflow_run_id : ${run_id}"
+          echo "conclusion      : ${conclusion}"
+          echo "conclusion=${conclusion}" >> "${GITHUB_OUTPUT}"
+          echo "workflow_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          if [ "${conclusion}" != "success" ]; then
+            echo "Decision: skipped: not CI success (conclusion=${conclusion})"
+            echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 2. Resolve the PR associated with the workflow run commit
+      # -----------------------------------------------------------------------
+      - name: Resolve PR from workflow run
+        id: resolve_pr
+        if: steps.ci.outputs.should_continue == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -z "${MANUAL_PR_NUMBER}" ]; then
+              echo "Decision: skipped: no PR resolved (workflow_dispatch with no pr_number input)"
+              echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            pr_number="${MANUAL_PR_NUMBER}"
+            echo "Using manually provided PR number: ${pr_number}"
+          else
+            pr_number=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -z "${pr_number}" ]; then
+              echo "Decision: skipped: no PR resolved for commit ${HEAD_SHA}"
+              echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            echo "Resolved PR number: ${pr_number} (from commit ${HEAD_SHA})"
+          fi
+
+          echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
+          echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+
+      # -----------------------------------------------------------------------
+      # 3. Load full PR details via GitHub API (not just event payload)
+      # -----------------------------------------------------------------------
+      - name: Load full PR details
+        id: pr
+        if: steps.resolve_pr.outputs.should_continue == 'true'
+        env:
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          pr_json=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
+            --json title,body,isDraft,author,state,baseRefName)
+
+          # Count changed files via API (event payload values can be incomplete)
+          changed_files=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[].filename' 2>/dev/null | wc -l | tr -d '[:space:]')
+
+          {
+            echo "author_login=$(jq -r '.author.login // ""' <<< "${pr_json}")"
+            echo "pr_state=$(jq -r '.state // ""' <<< "${pr_json}")"
+            echo "pr_base=$(jq -r '.baseRefName // ""' <<< "${pr_json}")"
+            echo "is_draft=$(jq -r '.isDraft' <<< "${pr_json}")"
+            echo "changed_files=${changed_files}"
+            echo "title<<EOF"
+            jq -r '.title // ""' <<< "${pr_json}"
+            echo "EOF"
+            echo "body<<EOF"
+            jq -r '.body // ""' <<< "${pr_json}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      # -----------------------------------------------------------------------
+      # 4. Log all decision-relevant values (no secrets emitted)
+      # -----------------------------------------------------------------------
+      - name: Log PR info
+        if: steps.resolve_pr.outputs.should_continue == 'true'
+        env:
+          PR_AUTHOR: ${{ steps.pr.outputs.author_login }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
+          PR_BASE: ${{ steps.pr.outputs.pr_base }}
+          PR_CHANGED_FILES: ${{ steps.pr.outputs.changed_files }}
+        run: |
+          echo "=== Auto-ready-merge evaluation ==="
+          echo "workflow_run_id     : ${{ steps.ci.outputs.workflow_run_id }}"
+          echo "workflow_conclusion : ${{ steps.ci.outputs.conclusion }}"
+          echo "PR number           : ${{ steps.resolve_pr.outputs.pr_number }}"
+          echo "PR author login     : ${PR_AUTHOR}"
+          echo "PR title            : ${PR_TITLE}"
+          echo "PR draft            : ${PR_DRAFT}"
+          echo "PR target branch    : ${PR_BASE}"
+          echo "Changed file count  : ${PR_CHANGED_FILES}"
+
+      # -----------------------------------------------------------------------
+      # 5. Safety gate — skip unless every condition passes
+      # -----------------------------------------------------------------------
+      - name: Safety gate
+        id: safety
+        if: steps.resolve_pr.outputs.should_continue == 'true'
+        env:
+          PR_AUTHOR: ${{ steps.pr.outputs.author_login }}
+          PR_STATE: ${{ steps.pr.outputs.pr_state }}
+          PR_BASE: ${{ steps.pr.outputs.pr_base }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          CHANGED_FILES: ${{ steps.pr.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+
+          skip=false
+          skip_reason=""
+
+          # Must be a recognised Copilot identity
+          if [ "${PR_AUTHOR}" != "Copilot" ] && \
+             [ "${PR_AUTHOR}" != "copilot-swe-agent" ] && \
+             [ "${PR_AUTHOR}" != "copilot-swe-agent[bot]" ]; then
+            skip=true
+            skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
+          fi
+
+          # Must target main
+          if [ "${PR_BASE}" != "main" ]; then
+            skip=true
+            skip_reason="PR targets ${PR_BASE}, not main"
+          fi
+
+          # Must be open (not closed or merged)
+          pr_state_upper="${PR_STATE^^}"
+          if [ "${pr_state_upper}" != "OPEN" ]; then
+            skip=true
+            skip_reason="PR is not open (state=${PR_STATE})"
+          fi
+
+          # Title must not contain WIP
+          if [[ "${PR_TITLE}" == *"WIP"* ]]; then
+            skip=true
+            skip_reason="WIP/placeholder (title contains WIP)"
+          fi
+
+          # Body must not contain known Copilot placeholder text
+          if grep -qi "Thanks for asking me to work on this" <<< "${PR_BODY:-}"; then
+            skip=true
+            skip_reason="WIP/placeholder (body contains placeholder text)"
+          elif grep -qi "I will get started" <<< "${PR_BODY:-}"; then
+            skip=true
+            skip_reason="WIP/placeholder (body contains placeholder text)"
+          elif grep -qi "I will start working" <<< "${PR_BODY:-}"; then
+            skip=true
+            skip_reason="WIP/placeholder (body contains placeholder text)"
+          fi
+
+          # Must have at least one changed file
+          if [ "${CHANGED_FILES:-0}" -eq 0 ]; then
+            skip=true
+            skip_reason="no changed files"
+          fi
+
+          if [ "${skip}" = "true" ]; then
+            echo "Decision: skipped: ${skip_reason}"
+            echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "All safety conditions passed."
+            echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 6. Check out the repo (default branch) to read the policy registry
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        if: steps.safety.outputs.should_continue == 'true'
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 7. Validate target-repo policy — only after_required_checks may proceed
+      # -----------------------------------------------------------------------
+      - name: Check target repo policy
+        id: policy
+        if: steps.safety.outputs.should_continue == 'true'
+        run: |
+          set -euo pipefail
+
+          repo_lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+
+          # Parse config/target-repos.yml (same simple format as validate-target-repo.mjs)
+          policy=""
+          in_target=false
+          while IFS= read -r line; do
+            # Detect the start of a target entry
+            if [[ "${line}" =~ ^[[:space:]]*-[[:space:]]+repo:[[:space:]]*(.*) ]]; then
+              entry_repo="${BASH_REMATCH[1]}"
+              entry_repo_lower=$(echo "${entry_repo}" | tr '[:upper:]' '[:lower:]')
+              if [ "${entry_repo_lower}" = "${repo_lower}" ]; then
+                in_target=true
+              else
+                in_target=false
+              fi
+              continue
+            fi
+            if [ "${in_target}" = "true" ]; then
+              # Extract auto_merge value
+              if [[ "${line}" =~ ^[[:space:]]+auto_merge:[[:space:]]*(.*) ]]; then
+                policy="${BASH_REMATCH[1]}"
+                break
+              fi
+              # A new list item means we left our block without finding auto_merge
+              if [[ "${line}" =~ ^[[:space:]]*-[[:space:]] ]]; then
+                break
+              fi
+            fi
+          done < "config/target-repos.yml"
+
+          if [ -z "${policy}" ]; then
+            policy="not_found"
+          fi
+
+          echo "target_repo_policy  : ${policy}"
+          echo "target_repo_policy=${policy}" >> "${GITHUB_OUTPUT}"
+
+          if [ "${policy}" = "after_required_checks" ]; then
+            echo "Policy allows auto-merge."
+            echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Decision: skipped: policy not auto-merge (policy=${policy})"
+            echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 8. Mark draft PR as ready for review (if applicable)
+      # -----------------------------------------------------------------------
+      - name: Mark PR ready for review
+        if: >
+          steps.policy.outputs.should_continue == 'true' &&
+          steps.pr.outputs.is_draft == 'true'
+        env:
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          echo "Marking PR #${PR_NUMBER} as ready for review..."
+          gh pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
+          echo "Decision: marked ready"
+
+      # -----------------------------------------------------------------------
+      # 9. Enable auto-merge with squash strategy
+      # -----------------------------------------------------------------------
+      - name: Enable auto-merge (squash)
+        if: steps.policy.outputs.should_continue == 'true'
+        env:
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          echo "Enabling auto-merge (squash) for PR #${PR_NUMBER}..."
+          MERGE_OUTPUT=$(gh pr merge "${PR_NUMBER}" \
+            --repo "${{ github.repository }}" \
+            --auto \
+            --squash 2>&1) || EXIT_CODE=$?
+          EXIT_CODE=${EXIT_CODE:-0}
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            echo "Decision: squash merge requested"
+            echo "Auto-merge enabled for PR #${PR_NUMBER}."
+          elif echo "${MERGE_OUTPUT}" | grep -qi "already"; then
+            echo "Decision: squash merge requested (already enabled)"
+            echo "Auto-merge was already enabled for PR #${PR_NUMBER}."
+          else
+            echo "::error::Failed to enable auto-merge for PR #${PR_NUMBER}."
+            exit "${EXIT_CODE}"
+          fi
