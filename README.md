@@ -44,7 +44,7 @@ Issue のライフサイクルは次を想定します。
 7. `failed-assignment`
    - 割り当て失敗。再試行前の可視化用。
 
-重要: **実行可能なのは `queued` のみ** です。
+重要: **実行可能なのは`queued`のみ**です。
 
 ## 3. Current architecture
 
