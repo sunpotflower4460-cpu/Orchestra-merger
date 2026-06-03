@@ -650,6 +650,42 @@
     }
   }
 
+  async function removeInProgressLabel(issue) {
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels/in-progress`;
+    try {
+      await ghFetch(path, { method: 'DELETE' });
+      return { removed: true };
+    } catch (error) {
+      if (error && typeof error === 'object' && error.githubStatus === 404) {
+        return { removed: false };
+      }
+      throw error;
+    }
+  }
+
+  async function addQueuedLabel(issue) {
+    // Defensive restore helper: used to re-add queued if it was unexpectedly
+    // removed before a rollback. Not called in the normal rollback path where
+    // queued is never removed prior to a successful assignment.
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
+    await ghFetch(path, {
+      method: 'POST',
+      body: {
+        labels: ['queued'],
+      },
+    });
+  }
+
+  async function addFailedAssignmentLabel(issue) {
+    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
+    await ghFetch(path, {
+      method: 'POST',
+      body: {
+        labels: ['failed-assignment'],
+      },
+    });
+  }
+
   async function handleStartNextIssue() {
     if (isStartingIssue) {
       return;
@@ -678,36 +714,70 @@
 
       // fetchQueuedIssues() が番号昇順で返すため先頭を開始対象にする。
       const targetIssue = issues[0];
-      appendLog(`開始対象 Issue を選択しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'info');
+      appendLog(`Selected queued issue #${targetIssue.number}: ${targetIssue.title || ''}`, 'info');
 
-      setStatus('start-status', `Issue #${targetIssue.number} を Copilot に割り当て中...`, 'info');
-      try {
-        await assignIssueToCopilot(targetIssue);
-        appendLog(`Issue #${targetIssue.number} を ${COPILOT_AGENT_LOGIN} に割り当てました。`, 'success');
-      } catch (error) {
-        const message = getErrorMessage(error);
-        if (isAuthFailure(error)) {
-          setStatus('start-status', `開始できません: 認証に失敗しました (${message})`, 'error');
-          appendLog(`開始処理を中断しました: 認証エラー (${message})`, 'error');
-          return;
-        }
-        appendLog(`Copilot 割り当てに失敗しました (#${targetIssue.number}): ${message}`, 'error');
-        setStatus('start-status', `Copilot 割り当て失敗: ${message}`, 'error');
-        return;
-      }
-
+      // Step 1: Add in-progress label to create a visible lock before assignment.
       setStatus('start-status', `Issue #${targetIssue.number} に in-progress ラベルを追加中...`, 'info');
       try {
         await addInProgressLabel(targetIssue);
-        appendLog(`Issue #${targetIssue.number} に in-progress ラベルを追加しました。`, 'success');
+        appendLog(`Added in-progress to issue #${targetIssue.number}`, 'success');
       } catch (error) {
         const message = getErrorMessage(error);
         appendLog(`in-progress ラベル追加に失敗しました (#${targetIssue.number}): ${message}`, 'error');
-        appendLog(`Issue #${targetIssue.number} は割り当て済みですがラベル更新が途中で停止しました。`, 'warning');
         setStatus('start-status', `in-progress ラベル追加失敗: ${message}`, 'error');
         return;
       }
 
+      // Step 2: Assign to Copilot. queued is intentionally kept until assignment succeeds.
+      setStatus('start-status', `Issue #${targetIssue.number} を Copilot に割り当て中...`, 'info');
+      try {
+        await assignIssueToCopilot(targetIssue);
+        appendLog(`Assigned issue #${targetIssue.number} to Copilot`, 'success');
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isAuthFailure(error)) {
+          appendLog(`Assignment failed for issue #${targetIssue.number}: 認証エラー (${message}) — rolling back`, 'error');
+        } else {
+          appendLog(`Assignment failed for issue #${targetIssue.number}: ${message}`, 'error');
+        }
+
+        // Rollback: remove in-progress so the issue stays recoverable.
+        appendLog(`Rollback: removing in-progress from issue #${targetIssue.number}`, 'warning');
+        try {
+          await removeInProgressLabel(targetIssue);
+          appendLog(`Rollback: removed in-progress from issue #${targetIssue.number}`, 'warning');
+        } catch (rollbackError) {
+          appendLog(
+            `Rollback: failed to remove in-progress from issue #${targetIssue.number}: ${getErrorMessage(rollbackError)}`,
+            'error',
+          );
+        }
+
+        // queued was never removed, so the issue remains in the queue.
+        appendLog(`Rollback: queued remains on issue #${targetIssue.number} (was not removed)`, 'warning');
+
+        // Add failed-assignment so the failure is visible.
+        try {
+          await addFailedAssignmentLabel(targetIssue);
+          appendLog(`Rollback: added failed-assignment to issue #${targetIssue.number}`, 'warning');
+        } catch (rollbackError) {
+          appendLog(
+            `Rollback: failed to add failed-assignment to issue #${targetIssue.number}: ${getErrorMessage(rollbackError)} — create the label manually if needed`,
+            'error',
+          );
+        }
+
+        setStatus(
+          'start-status',
+          isAuthFailure(error)
+            ? `開始できません: 認証に失敗しました (${message})`
+            : `Copilot 割り当て失敗: ${message}`,
+          'error',
+        );
+        return;
+      }
+
+      // Step 3: Remove queued only after assignment succeeds.
       setStatus('start-status', `Issue #${targetIssue.number} の queued ラベルを削除中...`, 'info');
       try {
         const result = await removeQueuedLabel(targetIssue);
@@ -715,12 +785,12 @@
         if (result.removed === false) {
           appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (すでに削除済みの可能性)。`, 'warning');
         } else {
-          appendLog(`Issue #${targetIssue.number} から queued ラベルを削除しました。`, 'success');
+          appendLog(`Removed queued from issue #${targetIssue.number}`, 'success');
         }
       } catch (error) {
         const message = getErrorMessage(error);
         appendLog(`queued ラベル削除に失敗しました (#${targetIssue.number}): ${message}`, 'error');
-        appendLog(`Issue #${targetIssue.number} は割り当て済み・in-progress 追加済みですが queued 削除で停止しました。`, 'warning');
+        appendLog(`Issue #${targetIssue.number} は割り当て済み・in-progress 追加済みですが queued 削除で停止しました。再ピック防止のため手動で queued を削除してください。`, 'warning');
         setStatus('start-status', `queued ラベル削除失敗: ${message}`, 'error');
         return;
       }

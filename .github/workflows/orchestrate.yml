@@ -208,6 +208,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Add in-progress label
+        id: add_in_progress
         if: steps.pick.outputs.has_issue == 'true'
         run: |
           set -euo pipefail
@@ -216,28 +217,15 @@ jobs:
 
           echo "Adding label 'in-progress' to issue #${issue_number}..."
           if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --add-label "in-progress"; then
-            echo "Successfully added 'in-progress' label to #${issue_number} (${issue_title})."
+            echo "Added in-progress to issue #${issue_number} (${issue_title})"
           else
             echo "::error::Failed to add 'in-progress' label to #${issue_number} (${issue_title}). Stopping before Copilot assignment."
             exit 1
           fi
 
-      - name: Remove queued label
-        if: steps.pick.outputs.has_issue == 'true'
-        run: |
-          set -euo pipefail
-          issue_number="${{ steps.pick.outputs.issue_number }}"
-          issue_title="${{ steps.pick.outputs.issue_title }}"
-
-          echo "Removing label 'queued' from issue #${issue_number}..."
-          if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "queued"; then
-            echo "Successfully removed 'queued' label from #${issue_number} (${issue_title})."
-          else
-            echo "::warning::Failed to remove 'queued' label from #${issue_number} (${issue_title}). Continuing to Copilot assignment."
-          fi
-
       - name: Assign issue to Copilot coding agent
-        if: steps.pick.outputs.has_issue == 'true'
+        id: assign
+        if: steps.pick.outputs.has_issue == 'true' && steps.add_in_progress.outcome == 'success'
         env:
           ISSUE_NUMBER: ${{ steps.pick.outputs.issue_number }}
           ISSUE_TITLE: ${{ steps.pick.outputs.issue_title }}
@@ -260,9 +248,43 @@ jobs:
           set -e
 
           if [ "${status}" -eq 0 ]; then
-            echo "Copilot assignment succeeded for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+            echo "Assigned issue #${ISSUE_NUMBER} to Copilot"
           else
-            echo "::error::Copilot assignment failed for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
+            echo "::error::Assignment failed for issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
             echo "::error::GitHub API response body: ${response}"
+
+            # Rollback: remove in-progress so the issue stays recoverable.
+            echo "Rollback: removing in-progress from issue #${ISSUE_NUMBER}..."
+            if gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label "in-progress" >/dev/null 2>&1; then
+              echo "Rollback: removed in-progress from issue #${ISSUE_NUMBER}"
+            else
+              echo "::warning::Rollback: failed to remove in-progress from issue #${ISSUE_NUMBER}"
+            fi
+
+            # queued was not removed so the issue remains in the queue.
+            echo "Rollback: queued remains on issue #${ISSUE_NUMBER} (was not removed)"
+
+            # Rollback: add failed-assignment so the failure is visible.
+            echo "Rollback: adding failed-assignment to issue #${ISSUE_NUMBER}..."
+            if gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label "failed-assignment" >/dev/null 2>&1; then
+              echo "Rollback: added failed-assignment to issue #${ISSUE_NUMBER}"
+            else
+              echo "::warning::Rollback: failed to add failed-assignment to issue #${ISSUE_NUMBER} — create the label manually if it does not exist"
+            fi
+
             exit "${status}"
+          fi
+
+      - name: Remove queued label
+        if: steps.pick.outputs.has_issue == 'true' && steps.assign.outcome == 'success'
+        run: |
+          set -euo pipefail
+          issue_number="${{ steps.pick.outputs.issue_number }}"
+          issue_title="${{ steps.pick.outputs.issue_title }}"
+
+          echo "Removing label 'queued' from issue #${issue_number}..."
+          if gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --remove-label "queued"; then
+            echo "Removed queued from issue #${issue_number} (${issue_title})"
+          else
+            echo "::warning::Failed to remove 'queued' label from #${issue_number} (${issue_title}). The issue may be re-picked on next run. Remove the queued label manually to prevent re-picking."
           fi
