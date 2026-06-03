@@ -11,7 +11,7 @@ targets:
   ...
 ```
 
-`targets` is an ordered list of `TargetEntry` objects. The order has no operational meaning in the current phase; it is reserved for future priority hints.
+`targets` is an ordered list of `TargetEntry` objects. The order has no operational meaning in the current phase; it is reserved for future priority hints. Entries should be kept in insertion order (new entries appended at the bottom) for a clear audit trail.
 
 ---
 

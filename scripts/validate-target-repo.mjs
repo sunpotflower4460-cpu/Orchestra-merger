@@ -50,10 +50,11 @@ function parseRegistryYaml(text) {
     if (!line.trim() || line.trim().startsWith('#')) continue;
 
     // New list item under `targets:`
-    if (/^\s*-\s+repo:\s*(.+)/.test(line)) {
+    const repoItemMatch = /^\s*-\s+repo:\s*(.+)/.exec(line);
+    if (repoItemMatch) {
       if (current) targets.push(current);
       current = { repo: '', enabled: false, default_branch: '', mode: '', auto_merge: '' };
-      current.repo = line.replace(/^\s*-\s+repo:\s*/, '').trim();
+      current.repo = repoItemMatch[1].trim();
       continue;
     }
 
@@ -110,7 +111,9 @@ function main() {
     return;
   }
 
-  // Normalise to lower-case for case-insensitive comparison
+  // Normalise both sides to lower-case. GitHub owner names are case-insensitive
+  // at the API level (e.g. "Owner/Repo" and "owner/repo" resolve to the same
+  // resource), so a case-insensitive comparison is the correct behaviour here.
   const requestedLower = requestedRepo.toLowerCase();
 
   let registryText;
