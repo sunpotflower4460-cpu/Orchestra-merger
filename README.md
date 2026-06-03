@@ -64,6 +64,7 @@ rough issue created
 - `needs-polish` / `ready-for-launch` は **非実行状態**
 - `ready-for-launch` へ移しても自動実行されない
 - 人手承認が終わるまで `queued` にしない
+- `Launch Ready Issues` workflow の `launch` スイッチが `true` のときだけ `ready-for-launch` を `queued` に変換する
 
 polish 後の Issue 本文テンプレート（最小要件）:
 
@@ -103,6 +104,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
 - GitHub Actions workflows:
   - `.github/workflows/automerge.yml`
   - `.github/workflows/orchestrate.yml`
+  - `.github/workflows/launch-ready-issues.yml`
   - `.github/workflows/notify-complete.yml`
   - `.github/workflows/check.yml`
 - セットアップ補助スクリプト: `/scripts`
@@ -154,17 +156,19 @@ polish 後の Issue 本文テンプレート（最小要件）:
 
 通常の使い方は次のとおりです。
 
-1. 作業させたい Issue を作成し、`draft` → `needs-polish` → `ready-for-launch` を経て `queued` にする
-2. GitHub Pages の PWA を開く
-3. PAT を入力する
-4. 保存方法を選ぶ
+1. 作業させたい Issue を作成し、`draft` → `needs-polish` → `ready-for-launch` まで進める
+2. Actions の `Launch Ready Issues` を実行し、`issue_numbers` に対象 Issue 番号を入れて preview する（`launch=false`）
+3. preview 内容を確認後、`launch=true` で再実行して `ready-for-launch` から `queued` に変換する
+4. GitHub Pages の PWA を開く
+5. PAT を入力する
+6. 保存方法を選ぶ
    - persistent mode: `localStorage`
    - session mode: `sessionStorage`
-5. 初回保存時の「信頼できる端末」確認に同意する
-6. 必要なら「最新に更新」で最新 PWA を読み直す
-7. 「次の Issue を開始」を押す
-8. 進捗欄で `in-progress` Issue / open PR / recent merge を確認する
-9. 全件完了後は `ntfy` 通知を確認する
+7. 初回保存時の「信頼できる端末」確認に同意する
+8. 必要なら「最新に更新」で最新 PWA を読み直す
+9. 「次の Issue を開始」を押す
+10. 進捗欄で `in-progress` Issue / open PR / recent merge を確認する
+11. 全件完了後は `ntfy` 通知を確認する
 
 ## 8. Manual follow-ups
 
