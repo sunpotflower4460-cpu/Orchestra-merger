@@ -104,6 +104,7 @@ polish 後の Issue 本文テンプレート（最小要件）:
   - オフラインキャッシュ
   - コアファイルの network-first 更新
 - GitHub Actions workflows:
+  - `.github/workflows/auto-ready-merge.yml`
   - `.github/workflows/automerge.yml`
   - `.github/workflows/orchestrate.yml`
   - `.github/workflows/launch-ready-issues.yml`
@@ -203,12 +204,13 @@ TARGET_REPO=owner/repo node scripts/validate-target-repo.mjs
 
 ## 10. Troubleshooting
 
-### automerge が動かない
+### auto-ready-merge が動かない
 
-- `.github/workflows/automerge.yml` が有効か確認する
+- `.github/workflows/auto-ready-merge.yml` が有効か確認する
 - PR が Copilot 作成 PR として判定されているか確認する
 - `check.yml` の `ci-check` など required checks が成功しているか確認する
 - branch protection が auto-merge を阻害していないか確認する
+- 必要時のみ `.github/workflows/automerge.yml` を `workflow_dispatch` で手動 fallback 実行する
 
 ### Copilot assignment が失敗する
 

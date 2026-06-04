@@ -75,7 +75,7 @@ Copilot opens PR
   → auto-ready-merge.yml reacts to CI Check completion:
       promotes draft Copilot PR → ready for review
       enables squash auto-merge (when policy = after_required_checks)
-  → automerge.yml enables auto-merge on PR events (ready_for_review etc.)
+  → (fallback only) automerge.yml can be run manually via workflow_dispatch
 
 PR is merged
   → orchestrate.yml (pull_request closed trigger):
@@ -107,15 +107,15 @@ All queued Issues done
 ### `auto-ready-merge.yml` — Auto-ready and auto-merge
 
 - **Triggers:** `workflow_run` (CI Check completed), `workflow_dispatch`
-- **What it does:** For Copilot-authored PRs targeting `main` that pass all safety guards, promotes draft PR to ready-for-review and enables squash auto-merge when `config/target-repos.yml` has `auto_merge: after_required_checks`.
+- **What it does (primary path):** For Copilot-authored PRs targeting `main` that pass all safety guards, promotes draft PR to ready-for-review and enables squash auto-merge when `config/target-repos.yml` has `auto_merge: after_required_checks`.
 - **Safety guards:** CI success, Copilot author, targets `main`, not closed, has changed files, no WIP in title/body.
 - **Secret required:** `ORCHESTRA_PAT`.
 
-### `automerge.yml` — Auto-merge enabler
+### `automerge.yml` — Manual fallback auto-merge enabler
 
-- **Triggers:** `pull_request` (ready_for_review, synchronize, edited, reopened), `workflow_dispatch`
+- **Triggers:** `workflow_dispatch` (manual fallback only; requires `pr_number` input)
 - **What it does:** Enables auto-merge (squash) for Copilot-authored PRs that are not draft and not WIP.
-- **Note:** Complements `auto-ready-merge.yml` by reacting to PR events rather than CI events.
+- **Note:** This is not part of the normal path. It exists as a documented fallback when manual re-run is needed.
 - **Secret required:** `ORCHESTRA_PAT`.
 
 ### `launch-ready-issues.yml` — Launch gate

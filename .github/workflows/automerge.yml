@@ -1,14 +1,14 @@
-name: Copilot Auto Merge
+name: Copilot Auto Merge (Fallback)
 
+# Primary owner of Copilot PR ready + auto-merge is auto-ready-merge.yml (CI-gated).
+# This workflow is kept only as a manual fallback to re-enable auto-merge for a PR.
 on:
-  pull_request:
-    # Transitional safety guard: Copilot can open a draft/WIP placeholder PR before
-    # implementation exists. Until CI checks from issue #26 and required checks are in
-    # place, the safe auto-merge path is:
-    # CI success + required check + non-WIP Copilot PR = safe auto-merge path.
-    # Avoid pull_request.opened so placeholder PR creation never enables auto-merge.
-    types: [ready_for_review, synchronize, edited, reopened]
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to process (manual fallback only)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,9 +16,8 @@ permissions:
 
 jobs:
   automerge:
-    name: Evaluate and enable auto-merge for Copilot PR
+    name: Evaluate and enable auto-merge for Copilot PR (fallback)
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     env:
       GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
 
@@ -37,7 +36,7 @@ jobs:
       - name: Fetch current PR state
         id: pr
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr_number }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -58,12 +57,13 @@ jobs:
 
       - name: Show PR info
         env:
+          PR_NUMBER: ${{ inputs.pr_number }}
           PR_TITLE: ${{ steps.pr.outputs.title }}
           PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
           PR_CHANGED_FILES: ${{ steps.pr.outputs.changed_files }}
           PR_AUTHOR_LOGIN: ${{ steps.pr.outputs.author_login }}
         run: |
-          echo "PR number       : ${{ github.event.pull_request.number }}"
+          echo "PR number       : ${PR_NUMBER}"
           echo "PR author login : ${PR_AUTHOR_LOGIN}"
           echo "PR title        : ${PR_TITLE}"
           echo "PR draft        : ${PR_DRAFT}"
@@ -127,9 +127,11 @@ jobs:
 
       - name: Enable auto-merge (squash)
         if: steps.safety.outputs.should_merge == 'true'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
-          echo "Enabling auto-merge (squash) for PR #${{ github.event.pull_request.number }}..."
-          MERGE_OUTPUT=$(gh pr merge ${{ github.event.pull_request.number }} \
+          echo "Enabling auto-merge (squash) for PR #${PR_NUMBER}..."
+          MERGE_OUTPUT=$(gh pr merge "${PR_NUMBER}" \
             --repo "${{ github.repository }}" \
             --auto \
             --squash 2>&1)
