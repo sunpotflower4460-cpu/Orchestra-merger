@@ -108,7 +108,7 @@ All queued Issues done
 
 - **Triggers:** `workflow_run` (CI Check completed), `workflow_dispatch`
 - **What it does (primary path):** For Copilot-authored PRs targeting `main` that pass all safety guards, promotes draft PR to ready-for-review and enables squash auto-merge when `config/target-repos.yml` has `auto_merge: after_required_checks`.
-- **Safety guards:** CI success, Copilot author, targets `main`, not closed, has changed files, no WIP in title/body.
+- **Safety guards:** CI success, Copilot author, targets `main`, not closed, has changed files, and no explicit WIP/placeholder markers (for example `[WIP]`, `WIP:`, `DO NOT MERGE`, `DRAFT ONLY`, or clear placeholder phrases) in title/body.
 - **Secret required:** `ORCHESTRA_PAT`.
 
 ### `automerge.yml` — Manual fallback auto-merge enabler
