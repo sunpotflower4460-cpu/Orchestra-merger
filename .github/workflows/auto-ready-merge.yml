@@ -63,20 +63,37 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             conclusion="${{ github.event.workflow_run.conclusion }}"
             run_id="${{ github.event.workflow_run.id }}"
+            # Event that triggered the upstream CI check run (for example pull_request).
+            upstream_event="${{ github.event.workflow_run.event }}"
+            trigger_type="workflow_run"
           else
             # workflow_dispatch: treat as success so the rest of the logic runs
             conclusion="success"
             run_id="manual"
+            upstream_event="workflow_dispatch"
+            trigger_type="workflow_dispatch"
           fi
+          echo "trigger_type       : ${trigger_type}"
+          echo "upstream_event     : ${upstream_event}"
           echo "workflow_run_id    : ${run_id}"
           echo "workflow_conclusion: ${conclusion}"
+          echo "trigger_type=${trigger_type}" >> "${GITHUB_OUTPUT}"
+          echo "upstream_event=${upstream_event}" >> "${GITHUB_OUTPUT}"
           echo "conclusion=${conclusion}" >> "${GITHUB_OUTPUT}"
           echo "workflow_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
-          if [ "${conclusion}" != "success" ]; then
+
+          if [ "${trigger_type}" = "workflow_run" ] && [ "${upstream_event}" != "pull_request" ]; then
+            reason="upstream event is ${upstream_event} (expected pull_request)"
+            echo "Decision: skipped: ${reason}"
+            echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=${reason}" >> "${GITHUB_OUTPUT}"
+          elif [ "${conclusion}" != "success" ]; then
             echo "Decision: skipped: not CI success (conclusion=${conclusion})"
             echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=not CI success (conclusion=${conclusion})" >> "${GITHUB_OUTPUT}"
           else
             echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=" >> "${GITHUB_OUTPUT}"
           fi
 
       # -----------------------------------------------------------------------
@@ -120,12 +137,15 @@ jobs:
 
             # Validate: must be non-empty and purely numeric before gh pr view runs
             if [ -z "${normalized}" ] || ! [[ "${normalized}" =~ ^[0-9]+$ ]]; then
-              echo "Decision: skipped: invalid PR number (raw='${raw_input}', sanitized='${normalized}')"
+              reason="invalid PR number (raw='${raw_input}', sanitized='${normalized}')"
+              echo "Decision: skipped: ${reason}"
               echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+              echo "skip_reason=${reason}" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
 
             pr_number="${normalized}"
+            resolve_method="manual_input"
             echo "Final PR number: ${pr_number}"
           else
             echo "Trigger: workflow_run"
@@ -139,6 +159,7 @@ jobs:
               --jq '.[0].number // empty' 2>/dev/null || true)
 
             if [ -n "${pr_number}" ]; then
+              resolve_method="sha_lookup"
               echo "Resolved PR #${pr_number} via commits/{HEAD_SHA}/pulls (method: sha_lookup)"
             else
               echo "commits/{HEAD_SHA}/pulls returned empty — trying head branch fallback..."
@@ -152,20 +173,25 @@ jobs:
                   "repos/${{ github.repository }}/pulls?state=open&head=${head_owner}:${HEAD_BRANCH}" \
                   --jq '.[0].number // empty' 2>/dev/null || true)
                 if [ -n "${pr_number}" ]; then
+                  resolve_method="head_branch_lookup"
                   echo "Resolved PR #${pr_number} via head branch ${HEAD_BRANCH} (method: head_branch_lookup)"
                 fi
               fi
             fi
 
             if [ -z "${pr_number}" ]; then
-              echo "Decision: skipped: no PR resolved for commit ${HEAD_SHA} or branch ${HEAD_BRANCH}"
+              reason="no PR resolved for commit ${HEAD_SHA} or branch ${HEAD_BRANCH}"
+              echo "Decision: skipped: ${reason}"
               echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+              echo "skip_reason=${reason}" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
           fi
 
           echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
+          echo "resolve_method=${resolve_method}" >> "${GITHUB_OUTPUT}"
           echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+          echo "skip_reason=" >> "${GITHUB_OUTPUT}"
 
       # -----------------------------------------------------------------------
       # 3. Load full PR details via GitHub API (not just event payload)
@@ -186,13 +212,13 @@ jobs:
           fi
 
           pr_json=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
-            --json title,body,isDraft,author,state,baseRefName)
+            --json title,body,isDraft,author,state,baseRefName,changedFiles)
 
-          # Count changed files via API (event payload values can be incomplete)
-          changed_files=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" \
-            --paginate --jq '.[].filename' 2>/dev/null | wc -l | tr -d '[:space:]')
+          changed_files=$(jq -r '.changedFiles // empty' <<< "${pr_json}")
+          if [ -z "${changed_files}" ] || ! [[ "${changed_files}" =~ ^[0-9]+$ ]]; then
+            echo "::warning::Unable to determine changedFiles for PR #${PR_NUMBER}; safety gate will skip with explicit reason."
+            changed_files=""
+          fi
 
           {
             echo "author_login=$(jq -r '.author.login // ""' <<< "${pr_json}")"
@@ -247,59 +273,73 @@ jobs:
           set -euo pipefail
 
           skip=false
-          skip_reason=""
+          reasons=()
 
           # Shared Copilot identity policy:
           # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
           is_copilot="$(node scripts/copilot-identity.mjs is-copilot "${PR_AUTHOR}")"
+          echo "author_is_copilot=${is_copilot}" >> "${GITHUB_OUTPUT}"
           if [ "${is_copilot}" != "true" ]; then
             skip=true
-            skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
+            reasons+=("not Copilot-authored (author=${PR_AUTHOR})")
           fi
 
           # Must target main
           if [ "${PR_BASE}" != "main" ]; then
             skip=true
-            skip_reason="PR targets ${PR_BASE}, not main"
+            reasons+=("PR targets ${PR_BASE}, not main")
           fi
 
           # Must be open (not closed or merged)
           pr_state_upper=$(echo "${PR_STATE}" | tr '[:lower:]' '[:upper:]')
           if [ "${pr_state_upper}" != "OPEN" ]; then
             skip=true
-            skip_reason="PR is not open (state=${PR_STATE})"
+            reasons+=("PR is not open (state=${PR_STATE})")
           fi
 
           # Title must not contain WIP
           if [[ "${PR_TITLE}" == *"WIP"* ]]; then
             skip=true
-            skip_reason="WIP/placeholder (title contains WIP)"
+            reasons+=("WIP/placeholder (title contains WIP)")
           fi
 
           # Body must not contain known Copilot placeholder text
           if grep -qi "Thanks for asking me to work on this" <<< "${PR_BODY:-}"; then
             skip=true
-            skip_reason="WIP/placeholder (body contains placeholder text)"
+            reasons+=("WIP/placeholder (body contains 'Thanks for asking me to work on this')")
           elif grep -qi "I will get started" <<< "${PR_BODY:-}"; then
             skip=true
-            skip_reason="WIP/placeholder (body contains placeholder text)"
+            reasons+=("WIP/placeholder (body contains 'I will get started')")
           elif grep -qi "I will start working" <<< "${PR_BODY:-}"; then
             skip=true
-            skip_reason="WIP/placeholder (body contains placeholder text)"
+            reasons+=("WIP/placeholder (body contains 'I will start working')")
           fi
 
-          # Must have at least one changed file
-          if [ "${CHANGED_FILES:-0}" -eq 0 ]; then
+          # Must have at least one changed file, and changed file count must be known.
+          if [ -z "${CHANGED_FILES:-}" ]; then
             skip=true
-            skip_reason="no changed files"
+            reasons+=("changed file count unavailable")
+          elif ! [[ "${CHANGED_FILES}" =~ ^[0-9]+$ ]]; then
+            skip=true
+            reasons+=("changed file count unavailable")
+          elif [ "${CHANGED_FILES}" -eq 0 ]; then
+            skip=true
+            reasons+=("no changed files")
           fi
 
           if [ "${skip}" = "true" ]; then
+            if [ "${#reasons[@]}" -gt 0 ]; then
+              skip_reason=$(IFS=', '; echo "${reasons[*]}")
+            else
+              skip_reason="safety gate failed (reason unavailable)"
+            fi
             echo "Decision: skipped: ${skip_reason}"
             echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=${skip_reason}" >> "${GITHUB_OUTPUT}"
           else
             echo "All safety conditions passed."
             echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=" >> "${GITHUB_OUTPUT}"
           fi
 
       # -----------------------------------------------------------------------
@@ -351,18 +391,39 @@ jobs:
           if [ "${policy}" = "after_required_checks" ]; then
             echo "Policy allows auto-merge."
             echo "should_continue=true" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=" >> "${GITHUB_OUTPUT}"
           else
-            echo "Decision: skipped: policy not auto-merge (policy=${policy})"
+            reason="policy not auto-merge (policy=${policy})"
+            echo "Decision: skipped: ${reason}"
             echo "should_continue=false" >> "${GITHUB_OUTPUT}"
+            echo "skip_reason=${reason}" >> "${GITHUB_OUTPUT}"
           fi
 
       # -----------------------------------------------------------------------
-      # 7. Mark draft PR as ready for review (if applicable)
+      # 7. Decide and execute Ready transition (if applicable)
       # -----------------------------------------------------------------------
+      - name: Decide Ready transition
+        id: ready
+        if: steps.policy.outputs.should_continue == 'true'
+        env:
+          PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
+        run: |
+          set -euo pipefail
+          if [ "${PR_DRAFT}" = "true" ]; then
+            echo "Ready decision: attempt transition (draft=true)."
+            echo "attempt_ready=true" >> "${GITHUB_OUTPUT}"
+            echo "ready_reason=draft PR detected" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Ready decision: skip transition (draft=false)."
+            echo "attempt_ready=false" >> "${GITHUB_OUTPUT}"
+            echo "ready_reason=PR already ready (draft=false)" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Mark PR ready for review
+        id: mark_ready
         if: >
           steps.policy.outputs.should_continue == 'true' &&
-          steps.pr.outputs.is_draft == 'true'
+          steps.ready.outputs.attempt_ready == 'true'
         env:
           PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
         run: |
@@ -370,6 +431,7 @@ jobs:
           echo "Marking PR #${PR_NUMBER} as ready for review..."
           gh pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
           echo "Decision: marked ready"
+          echo "marked_ready=true" >> "${GITHUB_OUTPUT}"
 
       # -----------------------------------------------------------------------
       # 8. Enable auto-merge with squash strategy
@@ -396,3 +458,74 @@ jobs:
             echo "::error::Failed to enable auto-merge for PR #${PR_NUMBER}: ${MERGE_OUTPUT}"
             exit "${EXIT_CODE}"
           fi
+
+      # -----------------------------------------------------------------------
+      # 9. Workflow summary (always)
+      # -----------------------------------------------------------------------
+      - name: Write workflow summary
+        if: always()
+        env:
+          TRIGGER_TYPE: ${{ steps.ci.outputs.trigger_type }}
+          UPSTREAM_EVENT: ${{ steps.ci.outputs.upstream_event }}
+          CI_CONCLUSION: ${{ steps.ci.outputs.conclusion }}
+          WORKFLOW_RUN_ID: ${{ steps.ci.outputs.workflow_run_id }}
+          CI_SKIP_REASON: ${{ steps.ci.outputs.skip_reason }}
+          PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
+          RESOLVE_METHOD: ${{ steps.resolve_pr.outputs.resolve_method }}
+          RESOLVE_SKIP_REASON: ${{ steps.resolve_pr.outputs.skip_reason }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author_login }}
+          PR_DRAFT: ${{ steps.pr.outputs.is_draft }}
+          AUTHOR_IS_COPILOT: ${{ steps.safety.outputs.author_is_copilot }}
+          SAFETY_SKIP_REASON: ${{ steps.safety.outputs.skip_reason }}
+          TARGET_REPO_POLICY: ${{ steps.policy.outputs.target_repo_policy }}
+          POLICY_SKIP_REASON: ${{ steps.policy.outputs.skip_reason }}
+          ATTEMPT_READY: ${{ steps.ready.outputs.attempt_ready }}
+          READY_REASON: ${{ steps.ready.outputs.ready_reason }}
+          MARKED_READY: ${{ steps.mark_ready.outputs.marked_ready }}
+        run: |
+          set -euo pipefail
+          overall_reason="${CI_SKIP_REASON}"
+          if [ -z "${overall_reason}" ] && [ -n "${RESOLVE_SKIP_REASON}" ]; then
+            overall_reason="${RESOLVE_SKIP_REASON}"
+          fi
+          if [ -z "${overall_reason}" ] && [ -n "${SAFETY_SKIP_REASON}" ]; then
+            overall_reason="${SAFETY_SKIP_REASON}"
+          fi
+          if [ -z "${overall_reason}" ] && [ -n "${POLICY_SKIP_REASON}" ]; then
+            overall_reason="${POLICY_SKIP_REASON}"
+          fi
+          if [ -z "${overall_reason}" ]; then
+            overall_reason="none"
+          fi
+
+          ready_outcome="not evaluated"
+          if [ "${ATTEMPT_READY}" = "true" ]; then
+            if [ "${MARKED_READY}" = "true" ]; then
+              ready_outcome="attempted: marked ready"
+            elif [ -z "${MARKED_READY}" ]; then
+              ready_outcome="attempted: mark_ready step did not complete (check step logs for errors)"
+            else
+              ready_outcome="attempted: marked_ready=${MARKED_READY}"
+            fi
+          elif [ "${ATTEMPT_READY}" = "false" ]; then
+            ready_outcome="skipped: ${READY_REASON}"
+          elif [ -z "${ATTEMPT_READY}" ]; then
+            ready_outcome="not evaluated (policy gate failed or earlier skip)"
+          fi
+
+          {
+            echo "### Auto-ready-merge decision summary"
+            echo ""
+            echo "- trigger type: ${TRIGGER_TYPE}"
+            echo "- upstream event: ${UPSTREAM_EVENT}"
+            echo "- CI conclusion: ${CI_CONCLUSION}"
+            echo "- workflow_run id: ${WORKFLOW_RUN_ID}"
+            echo "- resolved PR number: ${PR_NUMBER:-none}"
+            echo "- PR resolve method: ${RESOLVE_METHOD:-none}"
+            echo "- author login: ${PR_AUTHOR:-unknown}"
+            echo "- author is Copilot: ${AUTHOR_IS_COPILOT:-unknown}"
+            echo "- PR draft state: ${PR_DRAFT:-unknown}"
+            echo "- target repo policy decision: ${TARGET_REPO_POLICY:-not_evaluated}"
+            echo "- Ready transition: ${ready_outcome}"
+            echo "- skip reason: ${overall_reason}"
+          } >> "${GITHUB_STEP_SUMMARY}"
