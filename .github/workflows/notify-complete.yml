@@ -24,6 +24,9 @@ jobs:
       NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Evaluate completion and notify once
         run: |
           set -euo pipefail
@@ -68,7 +71,12 @@ jobs:
             -H 'Accept: application/vnd.github+json' \
             "/repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
             --jq '.[]' | jq -s '.')"
-          copilot_pr_count="$(jq '[.[] | select((.user.login | ascii_downcase) == "copilot" or (.user.login | ascii_downcase) == "copilot-swe-agent[bot]")] | length' <<< "${pulls_json}")"
+          # Shared Copilot identity policy:
+          # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
+          copilot_logins="$(node scripts/copilot-identity.mjs identities-json)"
+          copilot_pr_count="$(jq --argjson c "${copilot_logins}" \
+            '[.[] | select((((.user.login // "") | ascii_downcase | sub("^app/"; "")) as $normalized | $c | index($normalized)))] | length' \
+            <<< "${pulls_json}")"
 
           notified_raw="false"
           notified_state="false"

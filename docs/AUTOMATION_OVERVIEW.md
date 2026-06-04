@@ -163,8 +163,11 @@ The start action dispatches `orchestrate.yml` via `workflow_dispatch` rather tha
 | `setup-initial-settings.mjs` | `npm run setup:initial` | Creates required labels, registers secrets (`ORCHESTRA_PAT`, `NTFY_TOPIC`), enables GitHub Pages. |
 | `check-initial-settings.mjs` | `npm run check:initial` | Verifies that all required labels and secrets exist. |
 | `validate-target-repo.mjs` | `npm run validate:target-repo -- --repo owner/repo` | Confirms that a repository slug is present and enabled in `config/target-repos.yml`. |
+| `copilot-identity.mjs` | - | Loads `docs/config/copilot-identities.json`, normalizes logins (including `app/` prefix), and evaluates whether a login is Copilot. |
 
 All scripts respect a `DRY_RUN=true` environment variable to preview changes without applying them.
+
+The shared Copilot identity policy is defined at `docs/config/copilot-identities.json`. Both the PWA (`docs/app.js`) and workflows use this policy so Copilot detection remains consistent.
 
 ---
 
@@ -197,7 +200,7 @@ See [`docs/TARGET_REPOS.md`](TARGET_REPOS.md) for the full field reference.
 ## 10. Known limitations
 
 - PAT is stored in browser storage; only trusted personal devices should be used.
-- GitHub/Copilot bot identity (`Copilot`, `copilot-swe-agent[bot]`) may change in future GitHub releases.
+- GitHub/Copilot bot identity may change in future GitHub releases; if this happens, update `docs/config/copilot-identities.json`.
 - Some initial setup steps (branch protection, GitHub Pages activation) require manual configuration in GitHub settings.
 - Cross-repository orchestration is not yet implemented; `config/target-repos.yml` is reserved for a future phase.
 - `ntfy` topic subscription must be configured independently of this application.

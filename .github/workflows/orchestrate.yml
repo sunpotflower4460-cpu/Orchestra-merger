@@ -34,6 +34,9 @@ jobs:
           fi
           echo "ORCHESTRA_PAT is set."
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Show trigger reason
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -109,8 +112,10 @@ jobs:
             # Include `queued` as well as `in-progress`: an issue started via the GitHub UI
             # ("Assign to Copilot") may never have transitioned to in-progress. Restrict to
             # issues assigned to the Copilot agent so unrelated issues are never closed.
-            fb_copilot_logins='["Copilot","copilot-swe-agent","copilot-swe-agent[bot]","app/copilot-swe-agent"]'
-            fb_assigned_filter='[(.assignees // [])[].login] | any(. as $a | $c | index($a))'
+            # Shared Copilot identity policy:
+            # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
+            fb_copilot_logins="$(node scripts/copilot-identity.mjs identities-json)"
+            fb_assigned_filter='[(.assignees // [])[].login] | any(. as $a | (($a | ascii_downcase | sub("^app/"; "")) as $normalized | $c | index($normalized)))'
             fb_json="$( {
                 gh api --method GET --paginate -H 'Accept: application/vnd.github+json' \
                   "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" --jq '.[]'
@@ -219,8 +224,10 @@ jobs:
           # started outside this orchestrate/PWA path (e.g. GitHub UI "Assign to Copilot"),
           # so it never transitioned queued -> in-progress. Move it to in-progress and
           # exclude it from selection so Copilot is not assigned to it a second time.
-          copilot_logins='["Copilot","copilot-swe-agent","copilot-swe-agent[bot]","app/copilot-swe-agent"]'
-          assigned_filter='[(.assignees // [])[].login] | any(. as $a | $c | index($a))'
+          # Shared Copilot identity policy:
+          # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
+          copilot_logins="$(node scripts/copilot-identity.mjs identities-json)"
+          assigned_filter='[(.assignees // [])[].login] | any(. as $a | (($a | ascii_downcase | sub("^app/"; "")) as $normalized | $c | index($normalized)))'
 
           mapfile -t already_assigned < <(jq -r --argjson c "${copilot_logins}" \
             ".[] | select(${assigned_filter}) | .number" <<<"${queued_json}")

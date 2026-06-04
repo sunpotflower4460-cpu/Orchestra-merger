@@ -18,15 +18,7 @@ jobs:
   automerge:
     name: Enable auto-merge for Copilot PR
     runs-on: ubuntu-latest
-    # Copilot-authored PRs have been observed as `Copilot` in pull_request.user.login.
-    # Keep `copilot-swe-agent[bot]` as a fallback for possible GitHub identity changes.
-    # Human-authored PRs must not trigger this auto-merge job.
-    if: >
-      github.event_name == 'pull_request' &&
-      (
-        github.event.pull_request.user.login == 'Copilot' ||
-        github.event.pull_request.user.login == 'copilot-swe-agent[bot]'
-      )
+    if: github.event_name == 'pull_request'
     env:
       GH_TOKEN: ${{ secrets.ORCHESTRA_PAT }}
 
@@ -38,6 +30,9 @@ jobs:
             exit 1
           fi
           echo "ORCHESTRA_PAT is set."
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Fetch current PR state
         id: pr
@@ -74,8 +69,26 @@ jobs:
           echo "PR draft        : ${PR_DRAFT}"
           echo "Changed files   : ${PR_CHANGED_FILES}"
 
+      - name: Check Copilot author policy
+        id: author_policy
+        env:
+          PR_AUTHOR_LOGIN: ${{ steps.pr.outputs.author_login }}
+        run: |
+          set -euo pipefail
+          # Shared Copilot identity policy:
+          # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
+          is_copilot="$(node scripts/copilot-identity.mjs is-copilot "${PR_AUTHOR_LOGIN}")"
+          if [ "${is_copilot}" = "true" ]; then
+            echo "PR author matches Copilot policy."
+            echo "should_merge=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Skipping auto-merge setup: PR author is not Copilot (${PR_AUTHOR_LOGIN})"
+            echo "should_merge=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Skip unsafe early PR states
         id: safety
+        if: steps.author_policy.outputs.should_merge == 'true'
         env:
           PR_TITLE: ${{ steps.pr.outputs.title }}
           PR_BODY: ${{ steps.pr.outputs.body }}

@@ -1,0 +1,4 @@
+{
+  "normalize_prefixes": ["app/"],
+  "identities": ["Copilot", "copilot-swe-agent", "copilot-swe-agent[bot]"]
+}

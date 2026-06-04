@@ -6,7 +6,7 @@ name: Auto-ready and auto-merge Copilot PRs
 #
 # Safety conditions (ALL must be true to proceed):
 #   - workflow_run concluded success
-#   - PR author is Copilot / copilot-swe-agent / copilot-swe-agent[bot]
+#   - PR author matches shared Copilot identity policy
 #   - PR targets main
 #   - PR is not closed
 #   - PR has changed files > 0
@@ -49,6 +49,9 @@ jobs:
             exit 1
           fi
           echo "ORCHESTRA_PAT is set."
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
       # 1. Check that the triggering CI run actually succeeded
@@ -246,19 +249,13 @@ jobs:
           skip=false
           skip_reason=""
 
-          # Must be a recognised Copilot identity.
-          # `gh pr view --json author` reports GitHub App authors with an `app/`
-          # prefix (e.g. `app/copilot-swe-agent`), so strip it before matching.
-          normalized_author="${PR_AUTHOR#app/}"
-          case "${normalized_author}" in
-            Copilot|copilot-swe-agent|"copilot-swe-agent[bot]")
-              : # valid Copilot identity — continue
-              ;;
-            *)
-              skip=true
-              skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
-              ;;
-          esac
+          # Shared Copilot identity policy:
+          # docs/config/copilot-identities.json + scripts/copilot-identity.mjs
+          is_copilot="$(node scripts/copilot-identity.mjs is-copilot "${PR_AUTHOR}")"
+          if [ "${is_copilot}" != "true" ]; then
+            skip=true
+            skip_reason="not Copilot-authored (author=${PR_AUTHOR})"
+          fi
 
           # Must target main
           if [ "${PR_BASE}" != "main" ]; then
@@ -306,14 +303,7 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
-      # 6. Check out the repo (default branch) to read the policy registry
-      # -----------------------------------------------------------------------
-      - name: Checkout repository
-        if: steps.safety.outputs.should_continue == 'true'
-        uses: actions/checkout@v4
-
-      # -----------------------------------------------------------------------
-      # 7. Validate target-repo policy — only after_required_checks may proceed
+      # 6. Validate target-repo policy — only after_required_checks may proceed
       # -----------------------------------------------------------------------
       - name: Check target repo policy
         id: policy
@@ -367,7 +357,7 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
-      # 8. Mark draft PR as ready for review (if applicable)
+      # 7. Mark draft PR as ready for review (if applicable)
       # -----------------------------------------------------------------------
       - name: Mark PR ready for review
         if: >
@@ -382,7 +372,7 @@ jobs:
           echo "Decision: marked ready"
 
       # -----------------------------------------------------------------------
-      # 9. Enable auto-merge with squash strategy
+      # 8. Enable auto-merge with squash strategy
       # -----------------------------------------------------------------------
       - name: Enable auto-merge (squash)
         if: steps.policy.outputs.should_continue == 'true'
