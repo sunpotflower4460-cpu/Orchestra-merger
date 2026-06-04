@@ -1,5 +1,5 @@
-const CACHE_NAME = 'orchestra-merger-static-v2';
-const STATIC_ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'orchestra-merger-static-v3';
+const STATIC_ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png', './config/copilot-identities.json'];
 const CORE_APP_PATHS = new Set(['./', './index.html', './app.js', './sw.js'].map((path) => new URL(path, self.registration.scope).pathname));
 const GITHUB_API_ORIGIN = 'https://api.github.com';
 const networkErrorResponse = () =>

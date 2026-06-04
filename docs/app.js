@@ -6,8 +6,11 @@
   const PAT_STORAGE_MODE_KEY = 'orchestra_merger_pat_storage_mode';
   const STORAGE_MODE_LOCAL = 'local';
   const STORAGE_MODE_SESSION = 'session';
-  // NOTE: GitHub 側の仕様変更で bot login 名が変わる可能性があるため、差し替えはこの定数で行う。
-  const COPILOT_AGENT_LOGIN = 'copilot-swe-agent[bot]';
+  const COPILOT_IDENTITY_POLICY_PATH = './config/copilot-identities.json';
+  const FALLBACK_COPILOT_POLICY = {
+    normalize_prefixes: ['app/'],
+    identities: ['Copilot', 'copilot-swe-agent', 'copilot-swe-agent[bot]'],
+  };
   const ORCHESTRATE_WORKFLOW_FILE = 'orchestrate.yml';
   const ORCHESTRATE_WORKFLOW_REF = 'main';
   const POLL_INTERVAL_MS = 30000;
@@ -37,6 +40,54 @@
   let serviceWorkerRegistration = null;
   let isUpdatingApp = false;
   let reloadAfterControllerChange = false;
+  let copilotNormalizePrefixes = [];
+  let copilotIdentitySet = new Set();
+  let copilotIdentityPolicyPromise = null;
+
+  function normalizeCopilotLogin(login, prefixList = copilotNormalizePrefixes) {
+    const raw = typeof login === 'string' ? login.trim() : '';
+    const lower = raw.toLowerCase();
+    for (const prefix of prefixList) {
+      if (typeof prefix === 'string' && lower.startsWith(prefix.toLowerCase())) {
+        return lower.slice(prefix.length);
+      }
+    }
+    return lower;
+  }
+
+  function applyCopilotIdentityPolicy(policy) {
+    const prefixes = Array.isArray(policy.normalize_prefixes) ? policy.normalize_prefixes : [];
+    const identities = Array.isArray(policy.identities) ? policy.identities : [];
+    copilotNormalizePrefixes = prefixes;
+    copilotIdentitySet = new Set(identities.map((login) => normalizeCopilotLogin(login, prefixes)));
+  }
+
+  applyCopilotIdentityPolicy(FALLBACK_COPILOT_POLICY);
+
+  async function ensureCopilotIdentityPolicy() {
+    if (copilotIdentityPolicyPromise) {
+      return copilotIdentityPolicyPromise;
+    }
+
+    copilotIdentityPolicyPromise = (async () => {
+      const response = await fetch(COPILOT_IDENTITY_POLICY_PATH);
+      if (!response.ok) {
+        throw new Error(`Copilot identity policy load failed (${response.status})`);
+      }
+
+      const policy = await response.json();
+      applyCopilotIdentityPolicy(policy);
+    })().catch((error) => {
+      copilotIdentityPolicyPromise = null;
+      throw error;
+    });
+
+    return copilotIdentityPolicyPromise;
+  }
+
+  function isCopilotIdentity(login) {
+    return copilotIdentitySet.has(normalizeCopilotLogin(login));
+  }
 
   function setStatus(elementId, message, type = 'info') {
     const element = document.getElementById(elementId);
@@ -386,7 +437,7 @@
         const url = pr.html_url || `https://github.com/${OWNER}/${REPO}/pull/${number}`;
         const login = pr.user && typeof pr.user.login === 'string' ? pr.user.login : 'unknown';
         const draftLabel = pr.draft ? ' / Draft' : '';
-        const copilotLabel = login === COPILOT_AGENT_LOGIN ? ' / Copilot' : '';
+        const copilotLabel = isCopilotIdentity(login) ? ' / Copilot' : '';
         return (
           `<li class="queue-item">` +
           `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
@@ -533,6 +584,12 @@
     let recentMergeCount = 0;
 
     try {
+      try {
+        await ensureCopilotIdentityPolicy();
+      } catch (error) {
+        appendLog(`Copilot identity policy の読み込みに失敗しました: ${getErrorMessage(error)}`, 'warning');
+      }
+
       try {
         const issues = await fetchQueuedIssues();
         queuedIssues = issues;
