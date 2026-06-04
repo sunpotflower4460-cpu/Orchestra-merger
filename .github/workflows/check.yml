@@ -30,6 +30,7 @@ jobs:
             "docs/manifest.json"
             ".github/workflows/orchestrate.yml"
             ".github/workflows/automerge.yml"
+            ".github/workflows/auto-ready-merge.yml"
           )
 
           missing=0
