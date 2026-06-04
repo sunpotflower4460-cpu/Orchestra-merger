@@ -84,29 +84,81 @@ jobs:
         if: steps.ci.outputs.should_continue == 'true'
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -z "${MANUAL_PR_NUMBER}" ]; then
-              echo "Decision: skipped: no PR resolved (workflow_dispatch with no pr_number input)"
+            echo "Trigger: workflow_dispatch"
+            raw_input="${MANUAL_PR_NUMBER}"
+            echo "Raw input: [${raw_input}]"
+
+            # Normalize various input forms to a bare numeric PR number:
+            #   72           → 72
+            #   #72          → 72
+            #   PR owner/repo#72  → 72  (or any text ending with #NNN)
+            #   pr_number=72 → 72
+            #   pr_number = 72 → 72
+            normalized="${raw_input}"
+
+            if [[ "${normalized}" =~ ^[[:space:]]*pr_number[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+              # pr_number=NNN or pr_number = NNN
+              normalized="${BASH_REMATCH[1]}"
+            elif [[ "${normalized}" =~ \#([0-9]+)[[:space:]]*$ ]]; then
+              # Any text ending with #NNN (e.g. PR owner/repo#72 or #72)
+              normalized="${BASH_REMATCH[1]}"
+            else
+              # Strip only leading '#' characters and surrounding whitespace (not internal)
+              normalized=$(echo "${normalized}" | sed 's/^[[:space:]#]*//;s/[[:space:]]*$//')
+            fi
+
+            echo "Sanitized value: [${normalized}]"
+
+            # Validate: must be non-empty and purely numeric before gh pr view runs
+            if [ -z "${normalized}" ] || ! [[ "${normalized}" =~ ^[0-9]+$ ]]; then
+              echo "Decision: skipped: invalid PR number (raw='${raw_input}', sanitized='${normalized}')"
               echo "should_continue=false" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
-            pr_number="${MANUAL_PR_NUMBER}"
-            echo "Using manually provided PR number: ${pr_number}"
+
+            pr_number="${normalized}"
+            echo "Final PR number: ${pr_number}"
           else
+            echo "Trigger: workflow_run"
+            echo "HEAD SHA   : ${HEAD_SHA}"
+            echo "Head branch: ${HEAD_BRANCH}"
+
+            # Primary lookup: resolve PR via commit SHA
             pr_number=$(gh api \
               -H "Accept: application/vnd.github+json" \
               "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" \
               --jq '.[0].number // empty' 2>/dev/null || true)
+
+            if [ -n "${pr_number}" ]; then
+              echo "Resolved PR #${pr_number} via commits/{HEAD_SHA}/pulls (method: sha_lookup)"
+            else
+              echo "commits/{HEAD_SHA}/pulls returned empty — trying head branch fallback..."
+              # Fallback: find an open PR whose head branch matches the workflow run branch
+              if [ -n "${HEAD_BRANCH}" ]; then
+                head_owner="${{ github.event.workflow_run.head_repository.owner.login }}"
+                # Fall back to repository owner if head_repository owner is unavailable
+                head_owner="${head_owner:-${{ github.repository_owner }}}"
+                pr_number=$(gh api \
+                  -H "Accept: application/vnd.github+json" \
+                  "repos/${{ github.repository }}/pulls?state=open&head=${head_owner}:${HEAD_BRANCH}" \
+                  --jq '.[0].number // empty' 2>/dev/null || true)
+                if [ -n "${pr_number}" ]; then
+                  echo "Resolved PR #${pr_number} via head branch ${HEAD_BRANCH} (method: head_branch_lookup)"
+                fi
+              fi
+            fi
+
             if [ -z "${pr_number}" ]; then
-              echo "Decision: skipped: no PR resolved for commit ${HEAD_SHA}"
+              echo "Decision: skipped: no PR resolved for commit ${HEAD_SHA} or branch ${HEAD_BRANCH}"
               echo "should_continue=false" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
-            echo "Resolved PR number: ${pr_number} (from commit ${HEAD_SHA})"
           fi
 
           echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
@@ -122,6 +174,13 @@ jobs:
           PR_NUMBER: ${{ steps.resolve_pr.outputs.pr_number }}
         run: |
           set -euo pipefail
+
+          # Hard guard: pr_number must be purely numeric to avoid gh pr view
+          # treating an invalid value as a branch name and producing a confusing error.
+          if [ -z "${PR_NUMBER}" ] || ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Error: invalid PR number (pr_number='${PR_NUMBER}'). This is a code bug — the resolve step should have caught this."
+            exit 1
+          fi
 
           pr_json=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
             --json title,body,isDraft,author,state,baseRefName)
