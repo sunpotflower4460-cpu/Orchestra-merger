@@ -63,26 +63,27 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             conclusion="${{ github.event.workflow_run.conclusion }}"
             run_id="${{ github.event.workflow_run.id }}"
-            run_event="${{ github.event.workflow_run.event }}"
+            # Event that triggered the upstream CI check run (for example pull_request).
+            upstream_event="${{ github.event.workflow_run.event }}"
             trigger_type="workflow_run"
           else
             # workflow_dispatch: treat as success so the rest of the logic runs
             conclusion="success"
             run_id="manual"
-            run_event="workflow_dispatch"
+            upstream_event="workflow_dispatch"
             trigger_type="workflow_dispatch"
           fi
           echo "trigger_type       : ${trigger_type}"
-          echo "upstream_event     : ${run_event}"
+          echo "upstream_event     : ${upstream_event}"
           echo "workflow_run_id    : ${run_id}"
           echo "workflow_conclusion: ${conclusion}"
           echo "trigger_type=${trigger_type}" >> "${GITHUB_OUTPUT}"
-          echo "upstream_event=${run_event}" >> "${GITHUB_OUTPUT}"
+          echo "upstream_event=${upstream_event}" >> "${GITHUB_OUTPUT}"
           echo "conclusion=${conclusion}" >> "${GITHUB_OUTPUT}"
           echo "workflow_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
 
-          if [ "${trigger_type}" = "workflow_run" ] && [ "${run_event}" != "pull_request" ]; then
-            reason="upstream event is ${run_event} (expected pull_request)"
+          if [ "${trigger_type}" = "workflow_run" ] && [ "${upstream_event}" != "pull_request" ]; then
+            reason="upstream event is ${upstream_event} (expected pull_request)"
             echo "Decision: skipped: ${reason}"
             echo "should_continue=false" >> "${GITHUB_OUTPUT}"
             echo "skip_reason=${reason}" >> "${GITHUB_OUTPUT}"
@@ -213,12 +214,18 @@ jobs:
           pr_json=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
             --json title,body,isDraft,author,state,baseRefName,changedFiles)
 
+          changed_files=$(jq -r '.changedFiles // empty' <<< "${pr_json}")
+          if [ -z "${changed_files}" ] || ! [[ "${changed_files}" =~ ^[0-9]+$ ]]; then
+            echo "::warning::Unable to determine changedFiles for PR #${PR_NUMBER}; safety gate will skip with explicit reason."
+            changed_files=""
+          fi
+
           {
             echo "author_login=$(jq -r '.author.login // ""' <<< "${pr_json}")"
             echo "pr_state=$(jq -r '.state // ""' <<< "${pr_json}")"
             echo "pr_base=$(jq -r '.baseRefName // ""' <<< "${pr_json}")"
             echo "is_draft=$(jq -r '.isDraft' <<< "${pr_json}")"
-            echo "changed_files=$(jq -r '.changedFiles // 0' <<< "${pr_json}")"
+            echo "changed_files=${changed_files}"
             echo "title<<EOF"
             jq -r '.title // ""' <<< "${pr_json}"
             echo "EOF"
@@ -299,23 +306,33 @@ jobs:
           # Body must not contain known Copilot placeholder text
           if grep -qi "Thanks for asking me to work on this" <<< "${PR_BODY:-}"; then
             skip=true
-            reasons+=("WIP/placeholder (body contains placeholder text)")
+            reasons+=("WIP/placeholder (body contains 'Thanks for asking me to work on this')")
           elif grep -qi "I will get started" <<< "${PR_BODY:-}"; then
             skip=true
-            reasons+=("WIP/placeholder (body contains placeholder text)")
+            reasons+=("WIP/placeholder (body contains 'I will get started')")
           elif grep -qi "I will start working" <<< "${PR_BODY:-}"; then
             skip=true
-            reasons+=("WIP/placeholder (body contains placeholder text)")
+            reasons+=("WIP/placeholder (body contains 'I will start working')")
           fi
 
-          # Must have at least one changed file
-          if [ "${CHANGED_FILES:-0}" -eq 0 ]; then
+          # Must have at least one changed file, and changed file count must be known.
+          if [ -z "${CHANGED_FILES:-}" ]; then
+            skip=true
+            reasons+=("changed file count unavailable")
+          elif ! [[ "${CHANGED_FILES}" =~ ^[0-9]+$ ]]; then
+            skip=true
+            reasons+=("changed file count unavailable")
+          elif [ "${CHANGED_FILES}" -eq 0 ]; then
             skip=true
             reasons+=("no changed files")
           fi
 
           if [ "${skip}" = "true" ]; then
-            skip_reason=$(IFS='; '; echo "${reasons[*]}")
+            if [ "${#reasons[@]}" -gt 0 ]; then
+              skip_reason=$(IFS=', '; echo "${reasons[*]}")
+            else
+              skip_reason="safety gate failed (reason unavailable)"
+            fi
             echo "Decision: skipped: ${skip_reason}"
             echo "should_continue=false" >> "${GITHUB_OUTPUT}"
             echo "skip_reason=${skip_reason}" >> "${GITHUB_OUTPUT}"
@@ -482,12 +499,18 @@ jobs:
           fi
 
           ready_outcome="not evaluated"
-          if [ "${ATTEMPT_READY}" = "true" ] && [ "${MARKED_READY}" = "true" ]; then
-            ready_outcome="attempted: marked ready"
-          elif [ "${ATTEMPT_READY}" = "true" ]; then
-            ready_outcome="attempted: no success marker"
+          if [ "${ATTEMPT_READY}" = "true" ]; then
+            if [ "${MARKED_READY}" = "true" ]; then
+              ready_outcome="attempted: marked ready"
+            elif [ -z "${MARKED_READY}" ]; then
+              ready_outcome="attempted: mark_ready step did not complete (check step logs for errors)"
+            else
+              ready_outcome="attempted: marked_ready=${MARKED_READY}"
+            fi
           elif [ "${ATTEMPT_READY}" = "false" ]; then
             ready_outcome="skipped: ${READY_REASON}"
+          elif [ -z "${ATTEMPT_READY}" ]; then
+            ready_outcome="not evaluated (policy gate failed or earlier skip)"
           fi
 
           {
