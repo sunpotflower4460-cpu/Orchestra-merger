@@ -728,6 +728,7 @@
       }
 
       await loadQueue();
+      appendLog('キュー表示を更新しました。ワークフロー完了後にラベルと担当者が変わります。', 'info');
     } catch (error) {
       const message = getErrorMessage(error);
       if (isAuthFailure(error)) {

@@ -188,7 +188,7 @@ See [`docs/TARGET_REPOS.md`](TARGET_REPOS.md) for the full field reference.
 
 | Name | Where | Purpose |
 |---|---|---|
-| `ORCHESTRA_PAT` | Actions secret | GitHub PAT used by all workflows and the PWA. Minimum scopes: `metadata:read`, `contents:read/write`, `issues:read/write`, `pull_requests:read/write`, `actions:read/write`. The `actions:write` scope is required for the PWA to trigger `workflow_dispatch`. |
+| `ORCHESTRA_PAT` | Actions secret | GitHub PAT used by all workflows and the PWA. Minimum scopes: `metadata:read`, `contents:read/write`, `issues:read/write`, `pull_requests:read/write`, `actions:read/write` (the write half is required for the PWA to trigger `workflow_dispatch`). |
 | `NTFY_TOPIC` | Actions secret | ntfy topic string for completion notifications. Optional — notifications are skipped if absent. |
 | `ORCHESTRA_NOTIFIED` | Actions variable | Set by `notify-complete.yml` after sending a notification; reset at the start of each new queue run. |
 
