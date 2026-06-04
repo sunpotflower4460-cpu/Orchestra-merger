@@ -61,6 +61,23 @@ jobs:
           repo_slug_lc="$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           candidate_numbers=()
 
+          # Primary resolution: GitHub-native closing-issue linkage on the merged PR.
+          # Copilot-created PRs are linked to their originating issue, so this is the most
+          # reliable signal and does not depend on PR body wording or branch naming.
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          graphql_linked="$(gh api graphql \
+            -f query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){closingIssuesReferences(first:20){nodes{number}}}}}' \
+            -F owner="${owner}" -F repo="${repo_name}" -F pr="${MERGED_PR_NUMBER}" \
+            --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[].number' 2>/dev/null || true)"
+          if [ -n "${graphql_linked}" ]; then
+            echo "Found native closing-issue linkage for PR #${MERGED_PR_NUMBER}:"
+            echo "${graphql_linked}"
+            while IFS= read -r linked_num; do
+              [ -n "${linked_num}" ] && candidate_numbers+=("${linked_num}")
+            done <<< "${graphql_linked}"
+          fi
+
           body_matches="$(printf '%s\n' "${PR_BODY:-}" | grep -Eio '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)([[:space:]]+|[[:space:]]*:[[:space:]]*|)([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#([0-9]+)' || true)"
           if [ -n "${body_matches}" ]; then
             echo "Found potential linked issues in PR body:"
@@ -88,24 +105,31 @@ jobs:
           fi
 
           if [ "${#candidate_numbers[@]}" -eq 0 ]; then
-            echo "No PR body or branch issue match found. Checking open in-progress issues as fallback."
-            in_progress_json="$(gh api --method GET \
-              --paginate \
-              -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" \
-              --jq '.[]' | jq -s '.' 2>/dev/null || true)"
-            if [ -n "${in_progress_json}" ]; then
-              mapfile -t in_progress_numbers < <(jq -r '.[] | select(.pull_request == null) | .number' <<< "${in_progress_json}")
-              if [ "${#in_progress_numbers[@]}" -eq 1 ]; then
-                candidate_numbers+=("${in_progress_numbers[0]}")
-                echo "Fallback selected the only open in-progress issue: #${in_progress_numbers[0]}"
-              elif [ "${#in_progress_numbers[@]}" -eq 0 ]; then
-                echo "::warning::No open in-progress issue found for fallback resolution."
+            echo "No PR body or branch issue match found. Falling back to Copilot-assigned open issues (in-progress or queued)."
+            # Include `queued` as well as `in-progress`: an issue started via the GitHub UI
+            # ("Assign to Copilot") may never have transitioned to in-progress. Restrict to
+            # issues assigned to the Copilot agent so unrelated issues are never closed.
+            fb_copilot_logins='["Copilot","copilot-swe-agent","copilot-swe-agent[bot]","app/copilot-swe-agent"]'
+            fb_assigned_filter='[(.assignees // [])[].login] | any(. as $a | $c | index($a))'
+            fb_json="$( {
+                gh api --method GET --paginate -H 'Accept: application/vnd.github+json' \
+                  "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=in-progress&per_page=100" --jq '.[]'
+                gh api --method GET --paginate -H 'Accept: application/vnd.github+json' \
+                  "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100" --jq '.[]'
+              } 2>/dev/null | jq -s '.' || true)"
+            if [ -n "${fb_json}" ]; then
+              mapfile -t fb_numbers < <(jq -r --argjson c "${fb_copilot_logins}" \
+                ".[] | select(.pull_request == null) | select(${fb_assigned_filter}) | .number" <<< "${fb_json}" | sort -n | uniq)
+              if [ "${#fb_numbers[@]}" -eq 1 ]; then
+                candidate_numbers+=("${fb_numbers[0]}")
+                echo "Fallback selected the only Copilot-assigned open issue: #${fb_numbers[0]}"
+              elif [ "${#fb_numbers[@]}" -eq 0 ]; then
+                echo "::warning::No Copilot-assigned open issue found for fallback resolution."
               else
-                echo "::warning::Multiple open in-progress issues found (${#in_progress_numbers[@]}). Not guessing."
+                echo "::warning::Multiple Copilot-assigned open issues found (${#fb_numbers[@]}). Not guessing."
               fi
             else
-              echo "::warning::Failed to query open in-progress issues for fallback resolution."
+              echo "::warning::Failed to query open issues for fallback resolution."
             fi
           fi
 
@@ -180,7 +204,9 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/issues?state=open&labels=queued&per_page=100" \
             --jq '.[]' | jq -s '.')"
 
-          queued_count="$(jq '[.[] | select(.pull_request | not)] | length' <<<"${issues_json}")"
+          # Real issues only (the issues endpoint also returns PRs).
+          queued_json="$(jq '[.[] | select(.pull_request | not)]' <<<"${issues_json}")"
+          queued_count="$(jq 'length' <<<"${queued_json}")"
           echo "Queued issue count: ${queued_count}"
 
           if [ "${queued_count}" -eq 0 ]; then
@@ -189,7 +215,42 @@ jobs:
             exit 0
           fi
 
-          selected="$(jq '[.[] | select(.pull_request | not)] | sort_by(.number) | .[0]' <<<"${issues_json}")"
+          # Reconcile drift: a queued issue already assigned to the Copilot agent was
+          # started outside this orchestrate/PWA path (e.g. GitHub UI "Assign to Copilot"),
+          # so it never transitioned queued -> in-progress. Move it to in-progress and
+          # exclude it from selection so Copilot is not assigned to it a second time.
+          copilot_logins='["Copilot","copilot-swe-agent","copilot-swe-agent[bot]","app/copilot-swe-agent"]'
+          assigned_filter='[(.assignees // [])[].login] | any(. as $a | $c | index($a))'
+
+          mapfile -t already_assigned < <(jq -r --argjson c "${copilot_logins}" \
+            ".[] | select(${assigned_filter}) | .number" <<<"${queued_json}")
+          for an in "${already_assigned[@]}"; do
+            [ -n "${an}" ] || continue
+            echo "Issue #${an} is queued but already assigned to Copilot. Reconciling queued -> in-progress."
+            if gh issue edit "${an}" --repo "${GITHUB_REPOSITORY}" --add-label "in-progress" >/dev/null 2>&1; then
+              echo "  added in-progress to #${an}"
+            else
+              echo "::warning::Failed to add in-progress to #${an}"
+            fi
+            if gh issue edit "${an}" --repo "${GITHUB_REPOSITORY}" --remove-label "queued" >/dev/null 2>&1; then
+              echo "  removed queued from #${an}"
+            else
+              echo "::warning::Failed to remove queued from #${an}"
+            fi
+          done
+
+          # Selectable = queued issues NOT already assigned to Copilot.
+          selectable_json="$(jq --argjson c "${copilot_logins}" \
+            "[.[] | select((${assigned_filter}) | not)]" <<<"${queued_json}")"
+          selectable_count="$(jq 'length' <<<"${selectable_json}")"
+
+          if [ "${selectable_count}" -eq 0 ]; then
+            echo "All queued issues are already assigned to Copilot. Nothing new to assign."
+            echo "has_issue=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          selected="$(jq 'sort_by(.number) | .[0]' <<<"${selectable_json}")"
           issue_number="$(jq -r '.number' <<<"${selected}")"
           issue_title="$(jq -r '.title' <<<"${selected}")"
           issue_url="$(jq -r '.html_url' <<<"${selected}")"
@@ -199,7 +260,7 @@ jobs:
 
           {
             echo "has_issue=true"
-            echo "queued_count=${queued_count}"
+            echo "queued_count=${selectable_count}"
             echo "issue_number=${issue_number}"
             echo "issue_url=${issue_url}"
             echo "issue_title<<EOF"
@@ -241,7 +302,7 @@ jobs:
             -f "assignees[]=${COPILOT_AGENT_LOGIN}" \
             -f "agent_assignment[target_repo]=${COPILOT_TARGET_REPO}" \
             -f "agent_assignment[base_branch]=${COPILOT_BASE_BRANCH}" \
-            -f "agent_assignment[custom_instructions]=" \
+            -f "agent_assignment[custom_instructions]=When you open the pull request for this task, include the line \"Closes #${ISSUE_NUMBER}\" in the PR description so this issue is linked and closed automatically on merge." \
             -f "agent_assignment[custom_agent]=" \
             -f "agent_assignment[model]=" 2>&1)"
           status=$?
