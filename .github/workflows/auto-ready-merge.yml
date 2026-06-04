@@ -109,8 +109,8 @@ jobs:
               # Any text ending with #NNN (e.g. PR owner/repo#72 or #72)
               normalized="${BASH_REMATCH[1]}"
             else
-              # Strip any leading '#' characters and all surrounding whitespace
-              normalized=$(echo "${normalized}" | sed 's/^[[:space:]#]*//' | tr -d '[:space:]')
+              # Strip only leading '#' characters and surrounding whitespace (not internal)
+              normalized=$(echo "${normalized}" | sed 's/^[[:space:]#]*//;s/[[:space:]]*$//')
             fi
 
             echo "Sanitized value: [${normalized}]"
@@ -141,9 +141,12 @@ jobs:
               echo "commits/{HEAD_SHA}/pulls returned empty — trying head branch fallback..."
               # Fallback: find an open PR whose head branch matches the workflow run branch
               if [ -n "${HEAD_BRANCH}" ]; then
+                head_owner="${{ github.event.workflow_run.head_repository.owner.login }}"
+                # Fall back to repository owner if head_repository owner is unavailable
+                head_owner="${head_owner:-${{ github.repository_owner }}}"
                 pr_number=$(gh api \
                   -H "Accept: application/vnd.github+json" \
-                  "repos/${{ github.repository }}/pulls?state=open&head=${{ github.repository_owner }}:${HEAD_BRANCH}" \
+                  "repos/${{ github.repository }}/pulls?state=open&head=${head_owner}:${HEAD_BRANCH}" \
                   --jq '.[0].number // empty' 2>/dev/null || true)
                 if [ -n "${pr_number}" ]; then
                   echo "Resolved PR #${pr_number} via head branch ${HEAD_BRANCH} (method: head_branch_lookup)"
@@ -175,7 +178,7 @@ jobs:
           # Hard guard: pr_number must be purely numeric to avoid gh pr view
           # treating an invalid value as a branch name and producing a confusing error.
           if [ -z "${PR_NUMBER}" ] || ! [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
-            echo "::error::Decision: skipped: invalid PR number (pr_number='${PR_NUMBER}'). This is a code bug — the resolve step should have caught this."
+            echo "::error::Error: invalid PR number (pr_number='${PR_NUMBER}'). This is a code bug — the resolve step should have caught this."
             exit 1
           fi
 
