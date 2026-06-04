@@ -7,6 +7,10 @@
   const STORAGE_MODE_LOCAL = 'local';
   const STORAGE_MODE_SESSION = 'session';
   const COPILOT_IDENTITY_POLICY_PATH = './config/copilot-identities.json';
+  const FALLBACK_COPILOT_POLICY = {
+    normalize_prefixes: ['app/'],
+    identities: ['Copilot', 'copilot-swe-agent', 'copilot-swe-agent[bot]'],
+  };
   const ORCHESTRATE_WORKFLOW_FILE = 'orchestrate.yml';
   const ORCHESTRATE_WORKFLOW_REF = 'main';
   const POLL_INTERVAL_MS = 30000;
@@ -36,13 +40,14 @@
   let serviceWorkerRegistration = null;
   let isUpdatingApp = false;
   let reloadAfterControllerChange = false;
+  let copilotNormalizePrefixes = [];
   let copilotIdentitySet = new Set();
   let copilotIdentityPolicyPromise = null;
 
-  function normalizeCopilotLogin(login, normalizePrefixes = ['app/']) {
+  function normalizeCopilotLogin(login, prefixList = copilotNormalizePrefixes) {
     const raw = typeof login === 'string' ? login.trim() : '';
     const lower = raw.toLowerCase();
-    for (const prefix of normalizePrefixes) {
+    for (const prefix of prefixList) {
       if (typeof prefix === 'string' && lower.startsWith(prefix.toLowerCase())) {
         return lower.slice(prefix.length);
       }
@@ -50,21 +55,28 @@
     return lower;
   }
 
+  function applyCopilotIdentityPolicy(policy) {
+    const prefixes = Array.isArray(policy.normalize_prefixes) ? policy.normalize_prefixes : [];
+    const identities = Array.isArray(policy.identities) ? policy.identities : [];
+    copilotNormalizePrefixes = prefixes;
+    copilotIdentitySet = new Set(identities.map((login) => normalizeCopilotLogin(login, prefixes)));
+  }
+
+  applyCopilotIdentityPolicy(FALLBACK_COPILOT_POLICY);
+
   async function ensureCopilotIdentityPolicy() {
     if (copilotIdentityPolicyPromise) {
       return copilotIdentityPolicyPromise;
     }
 
     copilotIdentityPolicyPromise = (async () => {
-      const response = await fetch(COPILOT_IDENTITY_POLICY_PATH, { cache: 'no-store' });
+      const response = await fetch(COPILOT_IDENTITY_POLICY_PATH);
       if (!response.ok) {
         throw new Error(`Copilot identity policy load failed (${response.status})`);
       }
 
       const policy = await response.json();
-      const prefixes = Array.isArray(policy.normalize_prefixes) ? policy.normalize_prefixes : ['app/'];
-      const identities = Array.isArray(policy.identities) ? policy.identities : [];
-      copilotIdentitySet = new Set(identities.map((login) => normalizeCopilotLogin(login, prefixes)));
+      applyCopilotIdentityPolicy(policy);
     })().catch((error) => {
       copilotIdentityPolicyPromise = null;
       throw error;

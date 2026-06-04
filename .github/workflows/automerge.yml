@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   automerge:
-    name: Enable auto-merge for Copilot PR
+    name: Evaluate and enable auto-merge for Copilot PR
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     env:
