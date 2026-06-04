@@ -10,8 +10,7 @@ name: Auto-ready and auto-merge Copilot PRs
 #   - PR targets main
 #   - PR is not closed
 #   - PR has changed files > 0
-#   - PR title does not contain WIP
-#   - PR body does not contain known placeholder text
+#   - PR title/body does not contain explicit WIP/placeholder markers
 #   - config/target-repos.yml entry for this repo has auto_merge: after_required_checks
 #
 # If any condition fails the workflow logs the reason and exits cleanly (fail closed).
@@ -297,22 +296,50 @@ jobs:
             reasons+=("PR is not open (state=${PR_STATE})")
           fi
 
-          # Title must not contain WIP
-          if [[ "${PR_TITLE}" == *"WIP"* ]]; then
+          normalized_title=$(printf '%s' "${PR_TITLE:-}" | tr '\r' '\n')
+          normalized_body=$(printf '%s' "${PR_BODY:-}" | tr '\r' '\n')
+          matched_markers=()
+
+          add_marker_reason() {
+            local source="$1"
+            local marker="$2"
             skip=true
-            reasons+=("WIP/placeholder (title contains WIP)")
+            matched_markers+=("${source}:${marker}")
+            reasons+=("WIP/placeholder (${source} matched '${marker}')")
+          }
+
+          # Title markers (explicit status notation only).
+          if grep -Eqi -- '(^|[^[:alnum:]_])\[[[:space:]]*wip[[:space:]]*\]([^[:alnum:]_]|$)' <<< "${normalized_title}"; then
+            add_marker_reason "title" "[WIP]"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])wip[[:space:]]*:' <<< "${normalized_title}"; then
+            add_marker_reason "title" "WIP:"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])wip[[:space:]]*-[[:space:]]' <<< "${normalized_title}"; then
+            add_marker_reason "title" "WIP -"
           fi
 
-          # Body must not contain known Copilot placeholder text
-          if grep -qi "Thanks for asking me to work on this" <<< "${PR_BODY:-}"; then
-            skip=true
-            reasons+=("WIP/placeholder (body contains 'Thanks for asking me to work on this')")
-          elif grep -qi "I will get started" <<< "${PR_BODY:-}"; then
-            skip=true
-            reasons+=("WIP/placeholder (body contains 'I will get started')")
-          elif grep -qi "I will start working" <<< "${PR_BODY:-}"; then
-            skip=true
-            reasons+=("WIP/placeholder (body contains 'I will start working')")
+          # Explicit hold/placeholder markers in title or body.
+          combined_title_body="${normalized_title}"$'\n'"${normalized_body}"
+          if grep -Eqi -- '(^|[^[:alnum:]_])do[[:space:]]+not[[:space:]]+merge([^[:alnum:]_]|$)' <<< "${combined_title_body}"; then
+            add_marker_reason "title/body" "DO NOT MERGE"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])draft[[:space:]]+only([^[:alnum:]_]|$)' <<< "${combined_title_body}"; then
+            add_marker_reason "title/body" "DRAFT ONLY"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])placeholder[[:space:]]+implementation([^[:alnum:]_]|$)' <<< "${combined_title_body}"; then
+            add_marker_reason "title/body" "placeholder implementation"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])temporary[[:space:]]+placeholder([^[:alnum:]_]|$)' <<< "${combined_title_body}"; then
+            add_marker_reason "title/body" "temporary placeholder"
+          fi
+          if grep -Eqi -- '(^|[^[:alnum:]_])not[[:space:]]+ready[[:space:]]+for[[:space:]]+review([^[:alnum:]_]|$)' <<< "${combined_title_body}"; then
+            add_marker_reason "title/body" "not ready for review"
+          fi
+
+          # Legacy known Copilot placeholder text (kept fail-closed).
+          if grep -Eqi -- 'thanks for asking me to work on this|i will get started|i will start working' <<< "${normalized_body}"; then
+            add_marker_reason "body" "known Copilot placeholder text"
           fi
 
           # Must have at least one changed file, and changed file count must be known.
@@ -328,6 +355,9 @@ jobs:
           fi
 
           if [ "${skip}" = "true" ]; then
+            if [ "${#matched_markers[@]}" -gt 0 ]; then
+              echo "Matched WIP/placeholder markers: ${matched_markers[*]}"
+            fi
             if [ "${#reasons[@]}" -gt 0 ]; then
               skip_reason=$(IFS=', '; echo "${reasons[*]}")
             else
