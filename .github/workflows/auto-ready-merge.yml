@@ -187,8 +187,11 @@ jobs:
           skip=false
           skip_reason=""
 
-          # Must be a recognised Copilot identity
-          case "${PR_AUTHOR}" in
+          # Must be a recognised Copilot identity.
+          # `gh pr view --json author` reports GitHub App authors with an `app/`
+          # prefix (e.g. `app/copilot-swe-agent`), so strip it before matching.
+          normalized_author="${PR_AUTHOR#app/}"
+          case "${normalized_author}" in
             Copilot|copilot-swe-agent|"copilot-swe-agent[bot]")
               : # valid Copilot identity — continue
               ;;
