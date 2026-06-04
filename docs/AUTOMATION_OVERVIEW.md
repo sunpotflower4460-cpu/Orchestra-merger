@@ -24,13 +24,13 @@ Orchestra-merger is a lightweight personal GitHub orchestration system. It maint
 │  ┌─────────────────────┐    ┌──────────────────────────────────────┐ │
 │  │  GitHub Pages PWA   │    │         GitHub Actions               │ │
 │  │  docs/index.html    │    │                                      │ │
-│  │  docs/app.js        │◄───┤  orchestrate.yml                     │ │
+│  │  docs/app.js        │───►│  orchestrate.yml (workflow_dispatch) │ │
 │  │  docs/sw.js         │    │  auto-ready-merge.yml                │ │
 │  └──────────┬──────────┘    │  automerge.yml                       │ │
 │             │ PAT + REST    │  launch-ready-issues.yml             │ │
 │             ▼               │  notify-complete.yml                 │ │
-│  GitHub API / Copilot       │  check.yml                           │ │
-│  coding agent               └──────────────────────────────────────┘ │
+│  GitHub API (read-only      │  check.yml                           │ │
+│  queue/progress queries)    └──────────────────────────────────────┘ │
 │                                                                      │
 │  config/target-repos.yml  (allowlist for future multi-repo work)    │
 │  scripts/                 (setup and validation helpers)            │
@@ -64,11 +64,11 @@ Human creates Issue
   → polishes it (draft → needs-polish → ready-for-launch)
   → runs Launch Ready Issues workflow (ready-for-launch → queued)
 
-PWA: user clicks "Start next Issue"
-  → app calls GitHub API to assign the queued Issue to Copilot
+PWA: user clicks "次の Issue を開始"
+  → app dispatches orchestrate.yml via workflow_dispatch
   → orchestrate.yml picks the lowest-numbered queued Issue
   → adds in-progress, removes queued
-  → assigns to copilot-swe-agent[bot]
+  → assigns to copilot-swe-agent[bot] with "Closes #N" custom instruction
 
 Copilot opens PR
   → check.yml runs CI (ci-check job)
@@ -152,6 +152,8 @@ All queued Issues done
 
 The PWA stores the PAT in `localStorage` (persistent mode) or `sessionStorage` (session mode). No PAT is ever sent to a third-party server — all requests go directly to the GitHub REST API from the browser.
 
+The start action dispatches `orchestrate.yml` via `workflow_dispatch` rather than calling the Copilot assignment API directly. This ensures the single source of truth for Copilot assignment (including the `Closes #N` custom instruction) is the workflow, not browser-side logic.
+
 ---
 
 ## 7. Setup scripts (`scripts/`)
@@ -186,7 +188,7 @@ See [`docs/TARGET_REPOS.md`](TARGET_REPOS.md) for the full field reference.
 
 | Name | Where | Purpose |
 |---|---|---|
-| `ORCHESTRA_PAT` | Actions secret | GitHub PAT used by all workflows and the PWA. Minimum scopes: `metadata:read`, `contents:read/write`, `issues:read/write`, `pull_requests:read/write`, `actions:read/write`. |
+| `ORCHESTRA_PAT` | Actions secret | GitHub PAT used by all workflows and the PWA. Minimum scopes: `metadata:read`, `contents:read/write`, `issues:read/write`, `pull_requests:read/write`, `actions:read/write` (the write half is required for the PWA to trigger `workflow_dispatch`). |
 | `NTFY_TOPIC` | Actions secret | ntfy topic string for completion notifications. Optional — notifications are skipped if absent. |
 | `ORCHESTRA_NOTIFIED` | Actions variable | Set by `notify-complete.yml` after sending a notification; reset at the start of each new queue run. |
 

@@ -8,8 +8,8 @@
   const STORAGE_MODE_SESSION = 'session';
   // NOTE: GitHub 側の仕様変更で bot login 名が変わる可能性があるため、差し替えはこの定数で行う。
   const COPILOT_AGENT_LOGIN = 'copilot-swe-agent[bot]';
-  const COPILOT_TARGET_REPO = `${OWNER}/${REPO}`;
-  const COPILOT_BASE_BRANCH = 'main';
+  const ORCHESTRATE_WORKFLOW_FILE = 'orchestrate.yml';
+  const ORCHESTRATE_WORKFLOW_REF = 'main';
   const POLL_INTERVAL_MS = 30000;
 
   const STATUS_CLASS_MAP = {
@@ -657,104 +657,12 @@
     return status === 401 || status === 403;
   }
 
-  function renderInProgressIssue(issue) {
-    const listEl = document.getElementById('in-progress-list');
-    if (!listEl || !issue) {
-      return;
-    }
-
-    const title = escapeHtml(issue.title || '');
-    const number = issue.number;
-    const url = issue.html_url || `https://github.com/${OWNER}/${REPO}/issues/${number}`;
-    const itemHtml =
-      `<li class="queue-item">` +
-      `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="queue-issue-link">` +
-      `<span class="queue-issue-number">#${number}</span>` +
-      `<span class="queue-issue-title">${title}</span>` +
-      `</a></li>`;
-
-    const onlyPlaceholder = listEl.children.length === 1 && listEl.children[0].classList.contains('muted');
-    if (onlyPlaceholder) {
-      listEl.innerHTML = itemHtml;
-      return;
-    }
-    listEl.insertAdjacentHTML('afterbegin', itemHtml);
-  }
-
-  async function assignIssueToCopilot(issue) {
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/assignees`;
+  async function dispatchOrchestrateWorkflow() {
+    const path = `/repos/${OWNER}/${REPO}/actions/workflows/${ORCHESTRATE_WORKFLOW_FILE}/dispatches`;
     await ghFetch(path, {
       method: 'POST',
       body: {
-        assignees: [COPILOT_AGENT_LOGIN],
-        agent_assignment: {
-          target_repo: COPILOT_TARGET_REPO,
-          base_branch: COPILOT_BASE_BRANCH,
-          // 要件どおり空文字を送って custom_* / model は Copilot 側デフォルトに委ねる。
-          custom_instructions: '',
-          custom_agent: '',
-          model: '',
-        },
-      },
-    });
-  }
-
-  async function addInProgressLabel(issue) {
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
-    await ghFetch(path, {
-      method: 'POST',
-      body: {
-        labels: ['in-progress'],
-      },
-    });
-  }
-
-  async function removeQueuedLabel(issue) {
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels/queued`;
-    try {
-      await ghFetch(path, { method: 'DELETE' });
-      return { removed: true };
-    } catch (error) {
-      if (error && typeof error === 'object' && error.githubStatus === 404) {
-        appendLog(`Issue #${issue.number}: queued ラベルはすでに外れています (404)。`, 'warning');
-        return { removed: false };
-      }
-      throw error;
-    }
-  }
-
-  async function removeInProgressLabel(issue) {
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels/in-progress`;
-    try {
-      await ghFetch(path, { method: 'DELETE' });
-      return { removed: true };
-    } catch (error) {
-      if (error && typeof error === 'object' && error.githubStatus === 404) {
-        return { removed: false };
-      }
-      throw error;
-    }
-  }
-
-  async function addQueuedLabel(issue) {
-    // Defensive restore helper: used to re-add queued if it was unexpectedly
-    // removed before a rollback. Not called in the normal rollback path where
-    // queued is never removed prior to a successful assignment.
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
-    await ghFetch(path, {
-      method: 'POST',
-      body: {
-        labels: ['queued'],
-      },
-    });
-  }
-
-  async function addFailedAssignmentLabel(issue) {
-    const path = `/repos/${OWNER}/${REPO}/issues/${issue.number}/labels`;
-    await ghFetch(path, {
-      method: 'POST',
-      body: {
-        labels: ['failed-assignment'],
+        ref: ORCHESTRATE_WORKFLOW_REF,
       },
     });
   }
@@ -789,89 +697,38 @@
       const targetIssue = issues[0];
       appendLog(`Selected queued issue #${targetIssue.number}: ${targetIssue.title || ''}`, 'info');
 
-      // Step 1: Add in-progress label to create a visible lock before assignment.
-      setStatus('start-status', `Issue #${targetIssue.number} に in-progress ラベルを追加中...`, 'info');
-      try {
-        await addInProgressLabel(targetIssue);
-        appendLog(`Added in-progress to issue #${targetIssue.number}`, 'success');
-      } catch (error) {
-        const message = getErrorMessage(error);
-        appendLog(`in-progress ラベル追加に失敗しました (#${targetIssue.number}): ${message}`, 'error');
-        setStatus('start-status', `in-progress ラベル追加失敗: ${message}`, 'error');
-        return;
-      }
+      // Dispatch orchestrate.yml via workflow_dispatch so that the single source
+      // of truth (orchestrate.yml) handles in-progress labelling, Copilot
+      // assignment (including the "Closes #N" custom instruction), and queued
+      // removal.  The PWA never directly calls the Copilot assignment API.
+      setStatus('start-status', `orchestrate.yml をディスパッチ中...`, 'info');
+      appendLog(`Dispatching orchestrate.yml workflow_dispatch...`, 'info');
 
-      // Step 2: Assign to Copilot. queued is intentionally kept until assignment succeeds.
-      setStatus('start-status', `Issue #${targetIssue.number} を Copilot に割り当て中...`, 'info');
       try {
-        await assignIssueToCopilot(targetIssue);
-        appendLog(`Assigned issue #${targetIssue.number} to Copilot`, 'success');
+        await dispatchOrchestrateWorkflow();
+        setStatus(
+          'start-status',
+          `ワークフローをディスパッチしました。orchestrate.yml が Issue #${targetIssue.number} を処理します。`,
+          'success',
+        );
+        appendLog(
+          `Dispatched orchestrate.yml — ワークフローが Issue #${targetIssue.number} の開始を処理します。`,
+          'success',
+        );
       } catch (error) {
         const message = getErrorMessage(error);
         if (isAuthFailure(error)) {
-          appendLog(`Assignment failed for issue #${targetIssue.number}: 認証エラー (${message}) — rolling back`, 'error');
+          appendLog(`Dispatch failed: 認証エラー (${message})`, 'error');
+          setStatus('start-status', `開始できません: 認証に失敗しました (${message})`, 'error');
         } else {
-          appendLog(`Assignment failed for issue #${targetIssue.number}: ${message}`, 'error');
+          appendLog(`Dispatch failed: ${message}`, 'error');
+          setStatus('start-status', `ディスパッチ失敗: ${message}`, 'error');
         }
-
-        // Rollback: remove in-progress so the issue stays recoverable.
-        appendLog(`Rollback: removing in-progress from issue #${targetIssue.number}`, 'warning');
-        try {
-          await removeInProgressLabel(targetIssue);
-          appendLog(`Rollback: removed in-progress from issue #${targetIssue.number}`, 'warning');
-        } catch (rollbackError) {
-          appendLog(
-            `Rollback: failed to remove in-progress from issue #${targetIssue.number}: ${getErrorMessage(rollbackError)}`,
-            'error',
-          );
-        }
-
-        // queued was never removed, so the issue remains in the queue.
-        appendLog(`Rollback: queued remains on issue #${targetIssue.number} (was not removed)`, 'warning');
-
-        // Add failed-assignment so the failure is visible.
-        try {
-          await addFailedAssignmentLabel(targetIssue);
-          appendLog(`Rollback: added failed-assignment to issue #${targetIssue.number}`, 'warning');
-        } catch (rollbackError) {
-          appendLog(
-            `Rollback: failed to add failed-assignment to issue #${targetIssue.number}: ${getErrorMessage(rollbackError)} — create the label manually if needed`,
-            'error',
-          );
-        }
-
-        setStatus(
-          'start-status',
-          isAuthFailure(error)
-            ? `開始できません: 認証に失敗しました (${message})`
-            : `Copilot 割り当て失敗: ${message}`,
-          'error',
-        );
         return;
       }
 
-      // Step 3: Remove queued only after assignment succeeds.
-      setStatus('start-status', `Issue #${targetIssue.number} の queued ラベルを削除中...`, 'info');
-      try {
-        const result = await removeQueuedLabel(targetIssue);
-        // removed === false は 404 を警告扱いにして継続したケース。
-        if (result.removed === false) {
-          appendLog(`Issue #${targetIssue.number}: queued ラベル削除はスキップしました (すでに削除済みの可能性)。`, 'warning');
-        } else {
-          appendLog(`Removed queued from issue #${targetIssue.number}`, 'success');
-        }
-      } catch (error) {
-        const message = getErrorMessage(error);
-        appendLog(`queued ラベル削除に失敗しました (#${targetIssue.number}): ${message}`, 'error');
-        appendLog(`Issue #${targetIssue.number} は割り当て済み・in-progress 追加済みですが queued 削除で停止しました。再ピック防止のため手動で queued を削除してください。`, 'warning');
-        setStatus('start-status', `queued ラベル削除失敗: ${message}`, 'error');
-        return;
-      }
-
-      renderInProgressIssue(targetIssue);
-      setStatus('start-status', `開始しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'success');
-      appendLog(`開始処理が完了しました: #${targetIssue.number} ${targetIssue.title || ''}`, 'success');
       await loadQueue();
+      appendLog('キュー表示を更新しました。ワークフロー完了後にラベルと担当者が変わります。', 'info');
     } catch (error) {
       const message = getErrorMessage(error);
       if (isAuthFailure(error)) {
