@@ -296,8 +296,8 @@ jobs:
             reasons+=("PR is not open (state=${PR_STATE})")
           fi
 
-          normalized_title=$(printf '%s' "${PR_TITLE:-}" | tr '\r' '\n')
-          normalized_body=$(printf '%s' "${PR_BODY:-}" | tr '\r' '\n')
+          normalized_title=$(printf '%s' "${PR_TITLE:-}" | tr -d '\r')
+          normalized_body=$(printf '%s' "${PR_BODY:-}" | tr -d '\r')
           matched_markers=()
 
           add_marker_reason() {
@@ -338,7 +338,7 @@ jobs:
           fi
 
           # Legacy known Copilot placeholder text (kept fail-closed).
-          if grep -Eqi -- 'thanks for asking me to work on this|i will get started|i will start working' <<< "${normalized_body}"; then
+          if grep -Eqi -- '(^|[^[:alnum:]_])(thanks for asking me to work on this|i will get started|i will start working)([^[:alnum:]_]|$)' <<< "${normalized_body}"; then
             add_marker_reason "body" "known Copilot placeholder text"
           fi
 
